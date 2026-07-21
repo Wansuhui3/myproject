@@ -1,0 +1,699 @@
+/**
+ * 全局浅色主题样式。
+ * - 整体背景淡灰
+ * - 卡片化控件（圆角 + 边框）
+ * - 雷达切换按钮组 / 物理量按钮组 / 统计卡片样式
+ * - 上传区样式
+ */
+
+/* ===== 全局 ===== */
+body {
+    background-color: #f5f7fa;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    color: #2c3e50;
+}
+
+.app-shell {
+    min-height: 100vh;
+    background-color: #f5f7fa;
+}
+
+/* ===== 顶部栏 ===== */
+.top-bar {
+    background-color: #ffffff;
+    border-bottom: 1px solid #e6e9ed;
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.radar-btn-group {
+    display: inline-flex;
+    gap: 6px;
+}
+
+.radar-btn-group .form-check {
+    margin: 0;
+}
+
+.radar-btn-group .form-check-input {
+    display: none;
+}
+
+.radar-btn-group .form-check-label {
+    border: 1px solid #d6dde6;
+    border-radius: 6px;
+    padding: 4px 12px;
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 13px;
+    color: #4a5568;
+    transition: all 0.15s ease;
+}
+
+.radar-btn-group .form-check-label:hover {
+    border-color: #93c5fd;
+    background: #eff6ff;
+}
+
+.radar-btn-group .form-check-input:checked + .form-check-label {
+    background: #1f2937;
+    color: #ffffff;
+    border-color: #1f2937;
+    font-weight: 500;
+}
+
+.top-bar-tag {
+    background: #eef2ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* ===== 卡片 ===== */
+.app-card {
+    background: #ffffff;
+    border: 1px solid #e6e9ed;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+}
+
+.app-card-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #2c3e50;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.app-card-title .badge {
+    font-size: 11px;
+    font-weight: 500;
+    background: #eef2ff;
+    color: #4338ca;
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+/* ===== 上传区 ===== */
+.upload-zone {
+    width: 100%;
+    border: 1.5px dashed #cbd5e1;
+    border-radius: 6px;
+    background: #fafbfc;
+    padding: 10px 12px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.upload-zone:hover {
+    border-color: #60a5fa;
+    background: #eff6ff;
+}
+
+.upload-zone-inner {
+    pointer-events: none;
+}
+
+.upload-zone-icon {
+    font-size: 18px;
+    color: #94a3b8;
+    line-height: 1.2;
+}
+
+.upload-zone-text {
+    font-size: 12px;
+    color: #475569;
+    font-weight: 500;
+    margin-top: 2px;
+}
+
+.upload-zone-hint {
+    font-size: 11px;
+    color: #94a3b8;
+    margin-top: 2px;
+}
+
+/* ===== 目标 ID 列表 ===== */
+.id-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #ffffff;
+}
+
+.id-list-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    cursor: pointer;
+    font-size: 13px;
+    color: #334155;
+    transition: background 0.1s ease;
+}
+
+.id-list-item:last-child {
+    border-bottom: none;
+}
+
+.id-list-item:hover {
+    background: #f8fafc;
+}
+
+.id-list-item.selected {
+    background: #dbeafe;
+    color: #1e40af;
+    font-weight: 500;
+}
+
+.id-list-item .id-meta {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.id-list-item.selected .id-meta {
+    color: #1d4ed8;
+}
+
+/* ===== 真值对比 ID 列表：两行布局 ===== */
+.id-list-item.cmp-id-item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 8px 12px;
+    gap: 3px;
+}
+
+.cmp-id-row1 {
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+}
+
+.cmp-id-row1 .id-meta {
+    color: #2563eb;
+    font-weight: 600;
+}
+
+.cmp-id-row2 {
+    display: flex;
+    align-items: center;
+    font-size: 11px;
+    color: #64748b;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cmp-id-item.selected .cmp-id-row2 {
+    color: #1d4ed8;
+}
+
+.cmp-id-item.selected .cmp-id-row1 .id-meta {
+    color: #1e40af;
+}
+
+/* ===== 轨迹段表格 ===== */
+.traj-table {
+    width: 100%;
+    font-size: 12px;
+    border-collapse: collapse;
+}
+
+.traj-table th {
+    text-align: left;
+    padding: 4px 8px;
+    color: #64748b;
+    font-weight: 500;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc;
+}
+
+.traj-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f1f5f9;
+    color: #334155;
+}
+
+.traj-table tbody tr {
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.traj-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.traj-table tbody tr.selected {
+    background: #dbeafe;
+    color: #1e40af;
+    font-weight: 500;
+}
+
+.traj-table tbody tr.selected td {
+    color: #1e40af;
+}
+
+/* ===== 物理量多选面板 ===== */
+.qty-panel {
+    padding: 10px 12px;
+    min-height: 0;
+}
+
+.qty-checklist {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.qty-checklist .form-check {
+    display: flex;
+    align-items: center;
+    margin: 0;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.qty-checklist .form-check:hover {
+    background: #f1f5f9;
+}
+
+.qty-checklist .form-check-input {
+    margin-right: 6px;
+    cursor: pointer;
+}
+
+.qty-checklist-label {
+    font-size: 12px;
+    color: #334155;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* ===== 统计卡片 ===== */
+.stats-card {
+    background: #ffffff;
+    border: 1px solid #e6e9ed;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+}
+
+.stats-card-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: #2c3e50;
+    margin-bottom: 12px;
+}
+
+.stats-empty {
+    color: #94a3b8;
+    font-size: 12px;
+    text-align: center;
+    padding: 8px 0;
+}
+
+/* ===== 精简统计行 ===== */
+.stats-compact-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.stat-row:last-child {
+    border-bottom: none;
+}
+
+.stat-row-label {
+    font-size: 12px;
+    color: #64748b;
+}
+
+.stat-row-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.stats-separator {
+    margin: 4px 0;
+    border: none;
+    border-top: 1px solid #e2e8f0;
+}
+
+/* ===== 导出按钮 ===== */
+.export-card {
+    background: #ffffff;
+    border: 1px solid #e6e9ed;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-top: 12px;
+}
+
+.export-btn-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.export-btn {
+    width: 100%;
+    background: #ffffff;
+    border: 1px solid #3b82f6;
+    color: #3b82f6;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.export-btn:hover {
+    background: #eff6ff;
+    border-color: #2563eb;
+    color: #1d4ed8;
+}
+
+.export-btn:active {
+    background: #dbeafe;
+}
+
+/* ===== 中间图表区 ===== */
+.center-panel {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 56px);
+}
+
+/* 确保图表列填充整行高度，让子图自适应 */
+.center-panel > .row {
+    min-height: 0;
+}
+
+.center-panel .col-10 {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* 图表容器：flex:1 填满中间区域 */
+.center-graph-wrapper {
+    position: relative;
+    flex: 1;
+    background: #ffffff;
+    border: 1px solid #e6e9ed;
+    border-radius: 8px;
+    padding: 12px 16px 8px 16px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Loading 容器 flex 填满 */
+.loading-graph-inner {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* 固定像素高度：断掉 responsive 测量振荡回路 */
+/* 100vh - 56px(顶栏) - 48px(标题+padding) - 40px(feedback/按钮) ≈ 100vh - 150px */
+#trajectory-graph {
+    width: 100% !important;
+    height: calc(100vh - 150px) !important;
+    min-height: 0;
+}
+
+.graph-title-bar {
+    font-size: 13px;
+    color: #475569;
+    margin-bottom: 8px;
+    font-weight: 500;
+}
+
+.graph-title-bar .traj-id-badge {
+    color: #2563eb;
+    font-weight: 700;
+}
+
+.graph-title-bar .traj-name {
+    color: #1e40af;
+    font-weight: 600;
+}
+
+/* 空间跳变异常标记（规则 F 触发或 spatial_anomaly 标记） */
+.spatial-anomaly-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #fef3c7;
+    color: #b45309;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+
+.graph-title-bar .spatial-anomaly-badge {
+    vertical-align: middle;
+}
+
+.graph-title-bar .qty-name {
+    color: #0f766e;
+    font-weight: 600;
+}
+
+.graph-title-bar .frame-count {
+    color: #64748b;
+    font-weight: 400;
+}
+
+.graph-hint {
+    text-align: center;
+    color: #94a3b8;
+    font-size: 12px;
+    margin-top: 6px;
+    padding: 4px 0;
+}
+
+/* ===== 反馈消息 ===== */
+.feedback-info {
+    color: #1d4ed8;
+    font-size: 12px;
+}
+
+.feedback-success {
+    color: #15803d;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.feedback-error {
+    color: #dc2626;
+    font-size: 12px;
+}
+
+.feedback-warn {
+    color: #ea580c;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.feedback-muted {
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+.box-select-feedback {
+    position: absolute;
+    top: 8px;
+    right: 90px;
+    z-index: 100;
+    color: #2563eb;
+    font-size: 12px;
+    padding: 3px 10px;
+    background: #eff6ff;
+    border-radius: 4px;
+    border: 1px solid #bfdbfe;
+    white-space: nowrap;
+}
+
+.box-select-feedback:empty {
+    display: none;
+}
+
+.clear-box-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 100;
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 1px solid #fca5a5;
+    background: #fee2e2;
+    color: #dc2626;
+    cursor: pointer;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.clear-box-btn:hover {
+    background: #fecaca;
+    border-color: #f87171;
+}
+
+/* ============================================ */
+/*  Loading 动画立即响应 — 移除默认 fadeIn 延迟       */
+/* ============================================ */
+._dash-loading-callback {
+    animation: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+}
+
+._dash-loading-callback::after {
+    animation: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+}
+
+/* 波动分析面板 — 上传 Loading 无延迟 */
+#loading-upload .dash-spinner {
+    animation-delay: 0s !important;
+    animation-duration: 0.3s !important;
+}
+
+/* ============================================ */
+/*  真值对比模式                                   */
+/* ============================================ */
+
+/* --- 模式切换 Tab --- */
+.mode-tabs {
+    background: #fff;
+    border-bottom: 2px solid #e5e7eb;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.mode-tab {
+    padding: 8px 20px;
+    border: none;
+    background: none;
+    font-size: 13px;
+    font-weight: 500;
+    color: #6b7280;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.15s;
+}
+.mode-tab:hover {
+    color: #374151;
+}
+.mode-tab.active {
+    color: #2563eb;
+    border-bottom-color: #2563eb;
+    font-weight: 600;
+}
+
+/* --- 对比图表高度 --- */
+#cmp-graph {
+    width: 100% !important;
+    height: calc(100vh - 150px) !important;
+    min-height: 0;
+}
+
+
+/* --- 分距离区间表 --- */
+#cmp-bins-content table {
+    width: 100%;
+    font-size: 12px;
+    border-collapse: collapse;
+}
+#cmp-bins-content th {
+    text-align: center;
+    padding: 5px 4px;
+    color: #64748b;
+    font-weight: 500;
+    border-bottom: 1px solid #e2e8f0;
+    background: #f8fafc;
+    font-size: 11px;
+}
+#cmp-bins-content td {
+    padding: 5px 4px;
+    text-align: center;
+    border-bottom: 1px solid #f1f5f9;
+    color: #334155;
+    font-size: 12px;
+}
+
+/* ============================================ */
+/*  文件上传即时加载遮罩（upload_overlay.js 控制） */
+/* ============================================ */
+.upload-overlay-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;            /* 默认隐藏，由 JS 切换为 flex */
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    pointer-events: none;      /* 绝不拦截任何交互 */
+    animation: none !important;
+    opacity: 1 !important;
+    transition: none !important;
+}
+
+.upload-overlay-spinner {
+    width: 54px;
+    height: 54px;
+    border: 5px solid rgba(59, 130, 246, 0.25);
+    border-top-color: #3b82f6;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.upload-overlay-text {
+    margin-top: 18px;
+    color: #e2e8f0;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}

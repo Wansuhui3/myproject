@@ -1,0 +1,23 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ===== PyInstaller 构建产物 =====
+build/
+dist/
+
+# ===== 日志 =====
+app.log
+*.log
+
+# ===== IDE / 工具数据 =====
+.codebuddy/
+
+# ===== 系统文件 =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini

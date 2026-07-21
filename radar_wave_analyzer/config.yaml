@@ -1,0 +1,169 @@
+# 雷达目标轨迹波动分析系统 — 运行时配置
+# 所有参数均可按不同雷达型号/场景调整
+
+# ---- 采样与分段 ----
+SAMPLING_PERIOD_MS: 50          # 标称采样周期（ms），20Hz
+GAP_THRESHOLD: 500              # 时间间隔切分阈值（ms），= 10 × SAMPLING_PERIOD_MS
+MIN_TRAJ_FRAMES: 20             # 有效轨迹最小帧数
+WRAP_HIGH: 250                  # 回绕判定上限（Track_Age >= 此值视为可能回绕）
+WRAP_LOW: 5                     # 回绕判定下限（Track_Age <= 此值视为回绕延续）
+
+# ---- 位置不连续 / ID 复用 增强判定 ----
+# 规则 F（位置跳变切分）默认关闭：开启后会基于物理量空间位移强制切分同 ID 复用目标，
+# 需先用 SPATIAL_ANOMALY 标记观察阈值合理性后再启用，避免误切分。
+SPATIAL_SPLIT_ENABLED: false    # 是否启用位置跳变强制切分（规则 F）
+MAX_TRACK_SPEED: 50.0           # 帧间最大合理速度（m/s），超过视为不同物理目标
+POS_JUMP_THRESHOLD: 5.0         # 同时间戳(Δt=0)位置跳变阈值（m），超过视为不同目标
+POSITION_COLUMNS: [Dx, Dy]      # 用于计算空间位移的物理量列
+LIFECYCLE_COLUMNS: []           # 生命周期/状态字段（如 Track_Status），留空表示不使用
+LIFECYCLE_END_TOKENS: [end, dead, lost, invalid, "0", "false"]
+LIFECYCLE_START_TOKENS: [new, begin, valid, alive, "1", "true"]
+
+# ---- 交互筛选 ----
+TIMESTAMP_WINDOW_SEC: 30        # 精确定位模式的时间窗口半径（秒）
+DEFAULT_QUANTITY: Dx            # 默认展示的物理量曲线
+MAX_OVERLAY_CURVES: 4           # 多选叠加模式最大同时显示曲线数
+
+# ---- 大文件读取 ----
+CSV_CHUNK_THRESHOLD_MB: 200     # 文件达到此大小时启用分块读取（MB）
+CSV_CHUNK_SIZE_ROWS: 100000     # 每个数据块的读取行数
+
+# ---- 雷达数据源 ----
+radar_sources: {}
+
+# ---- 物理量定义 ----
+quantities:
+  Dx:
+    label: "Dx"
+    unit: "m"
+  Dy:
+    label: "Dy"
+    unit: "m"
+  Vx:
+    label: "Vx"
+    unit: "m/s"
+  Vy:
+    label: "Vy"
+    unit: "m/s"
+  Ax:
+    label: "Ax"
+    unit: "m/s²"
+  Ay:
+    label: "Ay"
+    unit: "m/s²"
+  HeadingAngle:
+    label: "HeadingAngle"
+    unit: "°"
+  Vabs:
+    label: "Vabs"
+    unit: "m/s"
+
+# ---- 导出 ----
+EXPORT_ENCODING: "utf-8-sig"    # CSV 导出编码（BOM 兼容 Excel）
+EXPORT_IMAGE_FORMAT: "png"      # 默认图片导出格式
+EXPORT_IMAGE_WIDTH: 1600        # 图片导出宽度（px）
+EXPORT_IMAGE_HEIGHT: 900        # 图片导出高度（px）
+EXPORT_IMAGE_SCALE: 2           # 图片导出缩放比
+
+# ---- 服务端缓存 (flask-caching) ----
+CACHE_TYPE: "SimpleCache"       # 内存缓存（单进程部署）
+CACHE_DEFAULT_TIMEOUT: 0        # 永不超时（桌面应用无过期需求）
+CACHE_THRESHOLD: 5000            # 最大缓存条目数
+
+# ---- 降采样 (plotly-resampler) ----
+# 已禁用：降采样导致 selectedData.points 为空，框选功能无法正常工作
+# 需要时改回 true 即可恢复
+RESAMPLER_ENABLED: false         # 是否启用降采样
+RESAMPLER_MAX_POINTS: 5000      # 超过此点数启用降采样
+RESAMPLER_DEFAULT_N_SAMPLES: 2000   # 降采样后默认显示点数
+
+# ---- 真值对比 ----
+comparison:
+  # 空间匹配阈值 (米) — 距离超过此值判为未匹配
+  match_threshold: 5.0
+  # 时间门控 (毫秒) — 时间差超过此值判为不重叠
+  time_gate_ms: 50
+  # 延迟扫描范围 (毫秒)
+  delay_scan_range: [-200, 200]
+  # 延迟扫描步长 (毫秒)
+  delay_scan_step: 10
+  # 延迟不敏感阈值 — RMSE变化低于此比例视为延迟不敏感
+  delay_insensitive_ratio: 0.05
+  # 延迟扫描候选至少满足的有效匹配样本数与覆盖率，避免通过丢弃大量帧取得伪最优
+  delay_min_matched_frames: 3
+  delay_min_match_rate: 0.5
+  # 坐标系一致性阈值 (米)
+  coord_bias_threshold: 0.5
+  # 分距离区间统计边界 (米)
+  distance_bins: [0, 10, 20, 30, 40, 50, 80, 120]
+  # 目标ID运动过滤与一对一关联：先剔除静止/短轨迹，再做时空匹配
+  id_matching:
+    enabled: true
+    min_frames: 3                 # 少于此帧数的雷达ID不参与关联
+    min_speed_mps: 0.3            # P90速度低于该值且无其他运动证据，视为静止
+    min_accel_mps2: 1.0           # P90加速度阈值
+    min_displacement_m: 0.5       # 相对起点最大位移阈值
+    min_pair_frames: 3            # 一个雷达ID/RTK ID关联最少命中帧数
+    min_pair_coverage: 0.5        # 关联命中帧占雷达轨迹帧数的最小比例
+    # 数据中断只作为图表断点；持续的低 Track_Age 且位置突变才判定 ID 复用
+    track_age_gap_ms: 500.0
+    track_age_confirm_frames: 2
+    track_age_reset_max: 10
+    lifecycle_position_jump_m: 8.0
+  # 雷达相邻时间间隔超过“中位采样间隔 × 此值”时，图表显示为中断
+  radar_gap_break_factor: 2.5
+  # 真值连续曲线仅绘制在选中雷达轨迹的时间窗口附近，避免压缩雷达曲线
+  rtk_curve_padding_ms: 100.0
+  # 导出编码
+  export_encoding: "utf-8-sig"
+  # 默认对比指标 — 雷达物理量 vs RTK真值物理量
+  default_quantities:
+    - cmp_dx
+    - cmp_dy
+    - cmp_vx
+    - cmp_vy
+  # 对比指标定义
+  #   chart_type: overlay(双线叠加) | error(误差散点+零线) | scatter(散点+阈值线)
+  #   radar_col / rtk_col: 对齐结果 DataFrame 中的列名
+  quantities:
+    cmp_dx:
+      label: "Dx"
+      unit: "m"
+      short_label: "Dx vs CX"
+      radar_col: "radar_Dx"
+      rtk_col: "rtk_center_x"
+      chart_type: "overlay"
+    cmp_dy:
+      label: "Dy"
+      unit: "m"
+      short_label: "Dy vs CY"
+      radar_col: "radar_Dy"
+      rtk_col: "rtk_center_y"
+      chart_type: "overlay"
+    cmp_vx:
+      label: "Vx"
+      unit: "m/s"
+      short_label: "Vx vs VX"
+      radar_col: "radar_Vx"
+      rtk_col: "rtk_Vx"
+      chart_type: "overlay"
+    cmp_vy:
+      label: "Vy"
+      unit: "m/s"
+      short_label: "Vy vs VY"
+      radar_col: "radar_Vy"
+      rtk_col: "rtk_Vy"
+      chart_type: "overlay"
+    cmp_pos_error:
+      label: "位置误差 ΔDist"
+      unit: "m"
+      short_label: "ΔDist"
+      field: "pos_error_abs"
+      chart_type: "error"
+    cmp_match_dist:
+      label: "匹配距离"
+      unit: "m"
+      short_label: "MatchDist"
+      field: "match_dist"
+      chart_type: "scatter"
+      threshold: 5.0
