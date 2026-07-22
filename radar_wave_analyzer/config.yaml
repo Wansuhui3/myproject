@@ -95,7 +95,7 @@ comparison:
   # 坐标系一致性阈值 (米)
   coord_bias_threshold: 0.5
   # 分距离区间统计边界 (米)
-  distance_bins: [0, 10, 20, 30, 40, 50, 80, 120]
+  distance_bins: [0, 10, 20, 50, 70, 100, 150]
   # 目标ID运动过滤与一对一关联：先剔除静止/短轨迹，再做时空匹配
   id_matching:
     enabled: true

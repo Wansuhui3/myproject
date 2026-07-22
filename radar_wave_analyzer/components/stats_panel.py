@@ -189,15 +189,17 @@ def render_cmp_distance_bins(bin_stats: list) -> html.Div:
 
     rows = []
     for b in bin_stats:
-        if b['frames'] == 0:
-            continue
+        # 空桶（无该距离区间样本）保留整行，数值列填 null 而非跳过
+        rmse = b.get('rmse')
+        mean = b.get('mean')
+        maxv = b.get('max')
         rows.append(html.Tr([
             html.Td(b['bin']),
             html.Td(str(b['frames'])),
-            html.Td(_fmt_val(b.get('rmse'), 3)),
-            html.Td(_fmt_val(b.get('mean'), 3)),
-            html.Td(_fmt_val(b.get('max'), 3)),
-        ]))
+            html.Td('null' if rmse is None else _fmt_val(rmse, 3)),
+            html.Td('null' if mean is None else _fmt_val(mean, 3)),
+            html.Td('null' if maxv is None else _fmt_val(maxv, 3)),
+        ], className='bin-row-empty' if b['frames'] == 0 else None))
 
     return html.Div([
         html.Div('分距离区间统计', className='stats-card-title'),

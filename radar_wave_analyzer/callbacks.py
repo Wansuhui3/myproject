@@ -1731,7 +1731,7 @@ def on_cmp_run(_n, state, delay_ms, selected_qties):
     stats_html = render_cmp_error_stats(summary, match_summary)
 
     # 距离区间统计
-    bins = cmp_cfg.get('distance_bins', [0, 10, 20, 30, 40, 50, 80, 120])
+    bins = cmp_cfg.get('distance_bins', [0, 10, 20, 50, 70, 100, 150])
     bin_stats = compute_distance_bin_stats(aligned_df, bins)
     bins_html = render_cmp_distance_bins(bin_stats)
 
