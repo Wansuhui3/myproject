@@ -7,10 +7,6 @@ import os
 from datetime import datetime
 from typing import Optional
 
-import matplotlib
-matplotlib.use('Agg')  # 无 GUI 后端，确保打包环境可用
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import pandas as pd
 
 try:
@@ -35,7 +31,7 @@ def _sanitize_csv_cell(value) -> str:
     return s
 
 
-def _init_matplotlib_fonts():
+def _init_matplotlib_fonts(plt):
     """设置 matplotlib 中文字体，避免乱码。"""
     import matplotlib.font_manager as fm
     available = {f.name for f in fm.fontManager.ttflist}
@@ -48,7 +44,14 @@ def _init_matplotlib_fonts():
     plt.rcParams['axes.unicode_minus'] = False
 
 
-_init_matplotlib_fonts()
+def _load_matplotlib():
+    """仅在用户导出图片时加载 Matplotlib，缩短应用启动并降低空载内存。"""
+    import matplotlib
+    matplotlib.use('Agg')  # 无 GUI 后端，确保打包环境可用
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+    _init_matplotlib_fonts(plt)
+    return plt, mticker
 
 
 def export_trajectory_csv(
@@ -74,8 +77,17 @@ def export_trajectory_csv(
     filepath = os.path.join(output_dir, filename)
 
     # 选择导出列
-    export_cols = ['timestamp', 'ID', 'Track_Age']
-    for col in ['Dx', 'Dy', 'Vx', 'Vy', 'Ax', 'Ay', 'HeadingAngle', 'Vabs']:
+    export_cols = [
+        col for col in (
+            'timestamp', 'radar_source_key', 'radar_source_label',
+            'source_filename', 'ID', 'Track_Age',
+        )
+        if col in seg_df.columns
+    ]
+    for col in [
+        'Dx', 'Dy', 'Vx', 'Vy', 'Ax', 'Ay', 'HeadingAngle', 'Vabs',
+        'Rx_front', 'Rx_rear', 'Ry',
+    ]:
         if col in seg_df.columns:
             export_cols.append(col)
     for col in seg_df.columns:
@@ -147,6 +159,7 @@ def export_graph_image(
     Returns:
         导出的文件路径。
     """
+    plt, mticker = _load_matplotlib()
     os.makedirs(output_dir, exist_ok=True)
 
     fmt = get('EXPORT_IMAGE_FORMAT', 'png')

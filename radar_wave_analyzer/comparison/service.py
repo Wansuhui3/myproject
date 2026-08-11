@@ -8,9 +8,7 @@ from typing import Any
 import pandas as pd
 
 from .alignment import align_trajectories
-from .coord_diag import diagnose_coordinate_system
 from .delay_detect import scan_delay
-from .id_finder import discover_best_id
 from .matching import extract_radar_trajectory, filter_and_match_ids
 from .parser import load_csv_file
 
@@ -104,6 +102,8 @@ def get_candidate_match_result(
             'target_stats': result['target_stats'],
         }
 
+    # KDTree/Scipy 只在关闭新版关联器的兼容模式下加载。
+    from .id_finder import discover_best_id
     return {
         'candidate_ids': discover_best_id(
             radar_df, rtk_df, comparison_config.get('match_threshold', 5.0),
@@ -189,6 +189,9 @@ def analyse_selected_track(
     cached_ids: list[dict] | None = None,
 ) -> dict[str, Any]:
     """执行坐标系诊断和延迟扫描，返回界面无关的分析结果。"""
+    # 坐标诊断依赖 SciPy，延迟到用户实际选择对比目标时再加载。
+    from .coord_diag import diagnose_coordinate_system
+
     selected_radar_df = extract_radar_trajectory(
         radar_df, track_id, file_index, segment_index,
         comparison_config.get('id_matching'),

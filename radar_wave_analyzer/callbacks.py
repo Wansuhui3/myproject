@@ -31,7 +31,7 @@ import sys
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, no_update, html, dcc, ALL
+from dash import Input, Output, State, Patch, callback, no_update, html, dcc, ALL
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
 
@@ -71,12 +71,12 @@ except ImportError:
 
 try:
     from .core.data_loader import (
-        load_csv_from_bytes, parse_timestamp,
+        identify_radar_source, load_csv_from_bytes, parse_timestamp,
         filter_by_time_window, get_time_range,
     )
 except ImportError:
     from core.data_loader import (  # type: ignore[no-redef]
-        load_csv_from_bytes, parse_timestamp,
+        identify_radar_source, load_csv_from_bytes, parse_timestamp,
         filter_by_time_window, get_time_range,
     )
 
@@ -116,9 +116,9 @@ except ImportError:
     )
 
 try:
-    from .components.graph_builder import build_multi_subplot_graph
+    from .components.graph_builder import build_highlight_shapes, build_multi_subplot_graph
 except ImportError:
-    from components.graph_builder import build_multi_subplot_graph  # type: ignore[no-redef]
+    from components.graph_builder import build_highlight_shapes, build_multi_subplot_graph  # type: ignore[no-redef]
 
 try:
     from .components.comparison_charts import (
@@ -181,13 +181,22 @@ def _ensure_valid_quantities(seg_df, selected_qties) -> list:
     return valid_qties
 
 
+def _get_non_highlight_shapes(figure: dict | None) -> list:
+    """保留图表自身的线形图例，移除上一次框选产生的矩形。"""
+    if not isinstance(figure, dict):
+        return []
+    shapes = figure.get('layout', {}).get('shapes', [])
+    return [shape for shape in shapes if isinstance(shape, dict) and shape.get('type') != 'rect']
+
+
 def _build_trajectory_table(id_meta):
     """构建轨迹段表格 HTML 并返回 (table, first_traj_id)。
 
     两个位置（on_timestamp_input / on_id_click）共用此逻辑。
     """
     table_header = html.Thead(html.Tr([
-        html.Th('时间区间'), html.Th('帧数'), html.Th('状态'),
+        html.Th('时间区间', className='traj-time-header'),
+        html.Th('帧数', className='traj-frames-header'),
     ]))
     rows = []
     first_traj_id = None
@@ -196,18 +205,24 @@ def _build_trajectory_table(id_meta):
         if first_traj_id is None:
             first_traj_id = traj_id
         label = seg.get('display_label', traj_id)
+        time_content = [
+            html.Span(
+                str(label),
+                className='traj-time-label',
+                title=str(label),
+            ),
+        ]
         if seg.get('spatial_anomaly'):
-            status_cell = html.Td(html.Span('⚠空间跳变', className='spatial-anomaly-badge'))
-        else:
-            status_cell = html.Td('')
+            time_content.append(
+                html.Span('⚠空间跳变', className='spatial-anomaly-badge')
+            )
         rows.append(html.Tr(
             id={'type': 'traj-row', 'index': traj_id},
             n_clicks=0,
             **{'data-traj-id': traj_id},
             children=[
-                html.Td(label, style={'color': '#2563eb', 'fontWeight': '500', 'whiteSpace': 'nowrap'}),
-                html.Td(str(seg['total_frames'])),
-                status_cell,
+                html.Td(time_content, className='traj-time-cell'),
+                html.Td(str(seg['total_frames']), className='traj-frames-cell'),
             ],
         ))
     table = html.Table([table_header, html.Tbody(rows)], className='traj-table')
@@ -239,6 +254,8 @@ def _build_title_bar(traj_id: str, selected_qties: list, n_frames: int) -> html.
     time_range_label = traj_id
     original_id = ''
     spatial_anom = False
+    source_key = ''
+    source_label = ''
     if meta_df is not None and traj_id is not None:
         row = meta_df[meta_df['trajectory_id'] == traj_id]
         if len(row) > 0:
@@ -248,8 +265,16 @@ def _build_title_bar(traj_id: str, selected_qties: list, n_frames: int) -> html.
             else:
                 time_range_label = str(traj_id)
             spatial_anom = bool(row.iloc[0].get('spatial_anomaly', False))
+            source_key = str(row.iloc[0].get('radar_source_key', ''))
+            source_label = str(row.iloc[0].get('radar_source_short_label', ''))
 
-    parts = [html.Span(f'ID: {original_id}', className='traj-id-badge')]
+    parts = []
+    if source_label:
+        parts.append(html.Span(
+            source_label,
+            className=f'radar-source-badge radar-source-{source_key}',
+        ))
+    parts.append(html.Span(f'ID: {original_id}', className='traj-id-badge'))
     parts.append(html.Span(' | ', style={'color': '#94a3b8'}))
     parts.append(html.Span(time_range_label, className='traj-name'))
     parts.append(html.Span(' | ', style={'color': '#94a3b8'}))
@@ -260,7 +285,36 @@ def _build_title_bar(traj_id: str, selected_qties: list, n_frames: int) -> html.
     return html.Span(parts)
 
 
-def _build_id_list_html(df, meta_df, center_ts=None):
+def _target_key(source_key: str, id_val: int):
+    return f'{source_key}::{int(id_val)}' if source_key else int(id_val)
+
+
+def _target_parts(target) -> tuple[str, int]:
+    text = str(target)
+    if '::' in text:
+        source_key, raw_id = text.split('::', 1)
+        return source_key, int(raw_id)
+    return '', int(text)
+
+
+def _target_meta(meta_df, target):
+    source_key, id_val = _target_parts(target)
+    mask = meta_df['original_id'] == id_val
+    if source_key and 'radar_source_key' in meta_df.columns:
+        mask &= meta_df['radar_source_key'].astype(str) == source_key
+    return meta_df[mask]
+
+
+def _target_badge(source_key: str, source_label: str):
+    if not source_key:
+        return None
+    return html.Span(
+        source_label or source_key.upper(),
+        className=f'radar-source-badge radar-source-{source_key}',
+    )
+
+
+def _build_id_list_html(df, meta_df, center_ts=None, selected_target=None):
     """构建目标ID列表HTML。
 
     Args:
@@ -271,26 +325,48 @@ def _build_id_list_html(df, meta_df, center_ts=None):
     Returns:
         (list_children, nearest_id_or_None)
     """
-    all_ids = sorted(df['ID'].unique())
+    if 'radar_source_key' in meta_df.columns:
+        target_rows = (
+            meta_df[['radar_source_key', 'radar_source_short_label', 'original_id']]
+            .drop_duplicates()
+            .sort_values(['radar_source_key', 'original_id'])
+        )
+        targets = [
+            (str(row['radar_source_key']), str(row['radar_source_short_label']), int(row['original_id']))
+            for _, row in target_rows.iterrows()
+        ]
+    else:
+        targets = [('', '', int(id_val)) for id_val in sorted(df['ID'].unique())]
 
     if center_ts is None:
         # 无时间戳 → 仅显示ID和段数，按ID排序
         list_children = []
-        for id_val in all_ids:
-            id_meta = meta_df[meta_df['original_id'] == id_val]
+        for source_key, source_label, id_val in targets:
+            target = _target_key(source_key, id_val)
+            id_meta = _target_meta(meta_df, target)
+            label_children = []
+            badge = _target_badge(source_key, source_label)
+            if badge is not None:
+                label_children.append(badge)
+            label_children.append(html.Span(f'ID: {id_val}'))
+            cls = 'id-list-item selected' if target == selected_target else 'id-list-item'
             list_children.append(html.Div([
-                html.Span(f'ID: {int(id_val)}', className='id-text'),
+                html.Span(label_children, className='id-text radar-target-label'),
                 html.Span(f'{len(id_meta)}段', className='id-meta'),
-            ], id={'type': 'id-list-item', 'index': int(id_val)},
-               n_clicks=0, className='id-list-item',
-               **{'data-id': str(int(id_val))}))
+            ], id={'type': 'id-list-item', 'index': target},
+               n_clicks=0, className=cls,
+               **{'data-id': str(target)}))
         return list_children, None
 
     # 有时间戳 → 计算每个ID距离输入时间戳最近点的时间差
     id_items = []
-    for id_val in all_ids:
-        id_meta = meta_df[meta_df['original_id'] == id_val]
-        id_df = df[df['ID'] == id_val]
+    for source_key, source_label, id_val in targets:
+        target = _target_key(source_key, id_val)
+        id_meta = _target_meta(meta_df, target)
+        id_mask = df['ID'] == id_val
+        if source_key and 'radar_source_key' in df.columns:
+            id_mask &= df['radar_source_key'].astype(str) == source_key
+        id_df = df[id_mask]
         if len(id_df) == 0:
             continue
         time_diffs = (id_df['timestamp_parsed'] - center_ts).dt.total_seconds()
@@ -298,7 +374,9 @@ def _build_id_list_html(df, meta_df, center_ts=None):
         diff_sec = time_diffs[min_diff_idx]
         sign = '+' if diff_sec >= 0 else ''
         id_items.append({
-            'id': int(id_val),
+            'id': target,
+            'source_key': source_key,
+            'source_label': source_label,
             'seg_count': len(id_meta), 
             'diff_sec': diff_sec,
             'display': f'ID: {int(id_val)}',
@@ -315,10 +393,16 @@ def _build_id_list_html(df, meta_df, center_ts=None):
 
     list_children = []
     for item in id_items:
-        is_selected = (item['id'] == nearest_id)
+        active_target = nearest_id if selected_target is None else selected_target
+        is_selected = (item['id'] == active_target)
         cls = 'id-list-item selected' if is_selected else 'id-list-item'
+        label_children = []
+        badge = _target_badge(item['source_key'], item['source_label'])
+        if badge is not None:
+            label_children.append(badge)
+        label_children.append(html.Span(item['display']))
         list_children.append(html.Div([
-            html.Span(item['display'], className='id-text'),
+            html.Span(label_children, className='id-text radar-target-label'),
             html.Span(item['meta'], className='id-meta'),
         ], id={'type': 'id-list-item', 'index': item['id']},
            n_clicks=0, className=cls,
@@ -501,12 +585,30 @@ def on_upload_csv(contents_list, filenames, radar_key):
 
     all_dfs = []
     errors = []
+    source_files: dict[str, dict] = {}
     for i, (content, fn) in enumerate(zip(contents_list, filenames)):
         try:
             data_bytes = _decode_upload_contents(content)
             df = load_csv_from_bytes(data_bytes, fn)
-            # 标记来源文件序号：跨文件同 ID 需按时间独立分段，避免曲线被错误合并
+            source = identify_radar_source(fn)
             df['file_index'] = i
+            df['source_filename'] = str(fn)
+            df['radar_source_key'] = str(source['key'])
+            df['radar_source_label'] = str(source['label'])
+            df['radar_source_short_label'] = str(source['short_label'])
+            df['radar_source_recognized'] = bool(source['recognized'])
+            # 未识别文件互相隔离，防止未知来源的同号 ID 重新交织。
+            df['radar_source_group'] = (
+                str(source['key']) if source['recognized'] else f'unknown_file_{i}'
+            )
+            summary_key = str(df['radar_source_group'].iloc[0])
+            source_summary = source_files.setdefault(summary_key, {
+                'key': str(source['key']),
+                'short_label': str(source['short_label']),
+                'recognized': bool(source['recognized']),
+                'filenames': [],
+            })
+            source_summary['filenames'].append(str(fn))
             all_dfs.append(df)
         except ValueError as e:
             errors.append(f'{fn}: {e}')
@@ -521,23 +623,44 @@ def on_upload_csv(contents_list, filenames, radar_key):
         merged_df = all_dfs[0]
     else:
         merged_df = pd.concat(all_dfs, ignore_index=True)
-        # 去重子集加入 file_index：跨文件同 (ID, timestamp) 的不同目标不再被误删，
-        # 由规则 E 按来源文件独立分段；同文件内真正重复帧仍正常去重。
+        # 跨文件、跨雷达的相同 ID/时间戳均保留；仅文件内部去重。
         merged_df = merged_df.drop_duplicates(subset=['file_index', 'ID', 'timestamp_parsed'], keep='first')
         merged_df = merged_df.sort_values('timestamp_parsed').reset_index(drop=True)
 
+    # 分段缓存只保存源行号，不长期保留每段 DataFrame 的重复副本。
+    source_row_column = '__source_row_index__'
+    merged_df[source_row_column] = np.arange(len(merged_df), dtype=np.int64)
     meta_df, segments = segment_trajectories(merged_df)
+    merged_df.drop(columns=[source_row_column], inplace=True)
 
     upload_label = filenames[0] if len(filenames) == 1 else f'{len(filenames)}个文件'
     set_data_cache(upload_label, radar_key, merged_df, meta_df, segments)
 
     t_min, t_max = get_time_range(merged_df)
     err_suffix = f'（部分失败: {"；".join(errors)}）' if errors else ''
-    feedback = html.Span(
-        f'已加载: {upload_label} | {len(merged_df)}行, {len(meta_df)}段 | '
-        f'{t_min.strftime("%Y-%m-%d %H:%M:%S")} ~ {t_max.strftime("%Y-%m-%d %H:%M:%S")} {err_suffix}',
-        style={'color': '#15803d', 'fontWeight': '500'},
-    )
+    source_badges = []
+    for info in source_files.values():
+        source_class = (
+            f'radar-source-{info["key"]}' if info['recognized']
+            else 'radar-source-unknown'
+        )
+        source_badges.append(html.Span(
+            f'{info["short_label"]} · {len(info["filenames"])}个文件',
+            className=f'radar-source-badge {source_class}',
+            title='\n'.join(info['filenames']),
+        ))
+    unknown_warning = ''
+    if any(not info['recognized'] for info in source_files.values()):
+        unknown_warning = ' | ⚠ 有文件未识别来源，请检查文件名（支持 FLR/RLR）'
+    feedback = html.Div([
+        html.Div(source_badges, className='radar-source-summary'),
+        html.Div(
+            f'已加载: {upload_label} | {len(merged_df)}行, {len(meta_df)}段 | '
+            f'{t_min.strftime("%Y-%m-%d %H:%M:%S")} ~ '
+            f'{t_max.strftime("%Y-%m-%d %H:%M:%S")}{unknown_warning} {err_suffix}',
+            className='upload-result-text',
+        ),
+    ], className='upload-source-result')
 
     # 上传成功后直接显示全部目标ID
     list_children, _ = _build_id_list_html(merged_df, meta_df)
@@ -622,11 +745,13 @@ def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
                           style={'cursor': 'default', 'color': '#94a3b8'})]
         return (empty, '', '数据集中无有效目标', *([no_update] * 9))
 
-    feedback = f'共 {len(list_children)} 个目标 · 最近: ID={nearest_id}'
+    nearest_source, nearest_raw_id = _target_parts(nearest_id)
+    nearest_source_text = f'{nearest_source.upper()} · ' if nearest_source else ''
+    feedback = f'共 {len(list_children)} 个雷达目标 · 最近: {nearest_source_text}ID={nearest_raw_id}'
 
     # ---- 自动绘制最近目标的图表 ----
     if nearest_id is not None:
-        id_meta = meta_df[meta_df['original_id'] == nearest_id]
+        id_meta = _target_meta(meta_df, nearest_id)
         first_row = id_meta.iloc[0] if len(id_meta) > 0 else None
 
         if first_row is not None:
@@ -649,7 +774,7 @@ def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
                 title = _build_title_bar(first_traj_id, valid_qties, len(first_seg_df))
                 table, _ = _build_trajectory_table(id_meta)
 
-                traj_label = f'ID={nearest_id}'
+                traj_label = f'{nearest_source_text}ID={nearest_raw_id}'
                 return (list_children, str(len(list_children)), feedback,
                         table, fig,
                         render_multi_full_stats(valid_qties, quantities_config, stats_per_qty, dx_max_dist),
@@ -697,44 +822,34 @@ def on_id_click(n_clicks_list, data_loaded: bool, selected_qties):
     trigger = ctx.triggered[0]
     try:
         triggered_id = json.loads(trigger['prop_id'].split('.')[0])
-        selected_id = int(triggered_id['index'])
+        selected_id = triggered_id['index']
+        selected_source, selected_raw_id = _target_parts(selected_id)
     except (json.JSONDecodeError, KeyError, IndexError, ValueError):
         raise PreventUpdate
 
     meta_df = get_meta_df()
 
-    # 重建 ListGroup
-    new_list = []
-    if ctx.inputs_list and ctx.inputs_list[0]:
-        for input_dict, n_click in zip(ctx.inputs_list[0], n_clicks_list):
-            idx = input_dict['id']['index']
-            id_val = int(idx)
-            is_selected = (id_val == selected_id)
-            cls = 'id-list-item selected' if is_selected else 'id-list-item'
-            id_meta = meta_df[meta_df['original_id'] == id_val]
-            new_list.append(html.Div(
-                [html.Span(f'ID: {id_val}', className='id-text'),
-                 html.Span(f'{len(id_meta)}段', className='id-meta')],
-                id={'type': 'id-list-item', 'index': id_val},
-                n_clicks=n_click,
-                className=cls,
-            ))
+    # 按“雷达来源 + ID”重建列表，避免前后雷达同号目标在 UI 中合并。
+    df = get_df()
+    new_list, _ = _build_id_list_html(df, meta_df, selected_target=selected_id)
 
-    id_meta = meta_df[meta_df['original_id'] == selected_id]
+    id_meta = _target_meta(meta_df, selected_id)
+    source_prefix = f'{selected_source.upper()} · ' if selected_source else ''
+    selected_label = f'{source_prefix}ID={selected_raw_id}'
     if len(id_meta) == 0:
-        return (new_list, selected_id, no_update, f'ID={selected_id}',
-                no_update, no_update, no_update, no_update, no_update, no_update)
+        return (new_list, selected_id, no_update, selected_label,
+                no_update, no_update, no_update, no_update, no_update, no_update, no_update)
 
     # 构建轨迹段表格
     table, first_traj_id = _build_trajectory_table(id_meta)
 
     if first_traj_id is None:
-        return (new_list, selected_id, table, f'ID={selected_id}',
+        return (new_list, selected_id, table, selected_label,
                 no_update, no_update, no_update, no_update, no_update, no_update, no_update)
 
     first_seg_df = get_segment(first_traj_id)
     if first_seg_df is None:
-        return (new_list, selected_id, table, f'ID={selected_id}',
+        return (new_list, selected_id, table, selected_label,
                 no_update, no_update, no_update, no_update, no_update, no_update, no_update)
 
     valid_qties = _ensure_valid_quantities(first_seg_df, selected_qties)
@@ -746,7 +861,7 @@ def on_id_click(n_clicks_list, data_loaded: bool, selected_qties):
 
     title = _build_title_bar(first_traj_id, valid_qties, len(first_seg_df))
 
-    return (new_list, selected_id, table, f'ID={selected_id}',
+    return (new_list, selected_id, table, selected_label,
             fig,
             render_multi_full_stats(valid_qties, quantities_config, stats_per_qty, dx_max_dist),
             render_box_stats_empty(),
@@ -878,13 +993,11 @@ def on_quantity_change(selected_values, traj_id, box_selection):
     Input('trajectory-graph', 'selectedData'),
     State('store-selected-trajectory', 'data'),
     State('store-selected-quantities', 'data'),
+    State('trajectory-graph', 'figure'),
     prevent_initial_call=True,
 )
-def on_box_select(selected_data, traj_id, selected_qties):
-    """框选 → 服务端重建 figure（含全子图 shapes）+ 统计 + 按钮。
-    由于使用 build_multi_subplot_graph(highlight_range=...) 直接将 shapes
-    硬编码进 figure 的 layout.shapes，不存在客户端外部修改被回滚的问题。
-    """
+def on_box_select(selected_data, traj_id, selected_qties, current_figure):
+    """框选 → Patch 更新高亮矩形，并基于原始全量数据计算统计。"""
     if selected_data is None:
         raise PreventUpdate
     x_range = extract_x_selection(selected_data)
@@ -914,15 +1027,17 @@ def on_box_select(selected_data, traj_id, selected_qties):
     start_idx = int(selected_positions[0])
     end_idx = int(selected_positions[-1])
 
-    # 重建 figure，shapes 直接写入 layout.shapes（服务端权威状态）
-    diff_cache = {}
-    fig = build_multi_subplot_graph(
-        seg_df, valid_qties, traj_id,
+    # 只更新 layout.shapes，避免为一次框选重新序列化全部曲线数据。
+    figure_patch = Patch()
+    highlight_shapes = build_highlight_shapes(
+        seg_df, valid_qties,
         highlight_range=(start_idx, end_idx),
         highlight_time_range=(x_min_ts, x_max_ts),
-        diff_cache=diff_cache,
+        vertical_spacing=0.01,
     )
+    figure_patch['layout']['shapes'] = highlight_shapes + _get_non_highlight_shapes(current_figure)
 
+    diff_cache = {}
     # 计算所有物理量框选统计
     box_stats_per_qty, _ = _compute_quantities_stats(seg_df, valid_qties, mask=mask, diff_cache=diff_cache)
     quantities_config = get('quantities', {})
@@ -935,7 +1050,7 @@ def on_box_select(selected_data, traj_id, selected_qties):
         'x_start': x_min_ts.isoformat(),
         'x_end': x_max_ts.isoformat(),
     }
-    return (fig,
+    return (figure_patch,
             box_selection_data,
             render_multi_box_stats(valid_qties, quantities_config, box_stats_per_qty),
             feedback)
@@ -953,10 +1068,11 @@ def on_box_select(selected_data, traj_id, selected_qties):
     State('store-selected-trajectory', 'data'),
     State('store-selected-quantities', 'data'),
     State('store-box-selection', 'data'),
+    State('trajectory-graph', 'figure'),
     prevent_initial_call=True,
 )
-def on_clear_box_select(_n, traj_id, selected_qties, current_box):
-    """清除框选：重建 figure（无 shapes）+ 清空统计。"""
+def on_clear_box_select(_n, traj_id, selected_qties, current_box, current_figure):
+    """清除框选：仅移除高亮矩形并清空局部统计。"""
     if not _n or _n <= 0:
         raise PreventUpdate
     if not traj_id or not has_data_loaded():
@@ -968,10 +1084,11 @@ def on_clear_box_select(_n, traj_id, selected_qties, current_box):
 
     valid_qties = _ensure_valid_quantities(seg_df, selected_qties)
 
-    # 重建 figure（无 highlight → 无 shapes）
-    fig = build_multi_subplot_graph(seg_df, valid_qties, traj_id)
+    # 仅删除矩形高亮，保留图表自身的线形标注。
+    figure_patch = Patch()
+    figure_patch['layout']['shapes'] = _get_non_highlight_shapes(current_figure)
 
-    return (fig,
+    return (figure_patch,
             None,
             render_box_stats_empty(),
             '')

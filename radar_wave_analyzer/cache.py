@@ -7,7 +7,7 @@ flask-caching 服务端缓存模块。
 缓存键按 Flask session 与雷达位置双重隔离，避免多个浏览器窗口/用户互相覆盖：
   - 'session:{id}:radar:{radar}:df'          : 预处理后的全量 DataFrame
   - 'session:{id}:radar:{radar}:meta_df'     : 分段元信息表
-  - 'session:{id}:radar:{radar}:segments'    : 全部轨迹段 dict
+  - 'session:{id}:radar:{radar}:segments'    : 轨迹段到源行号的紧凑索引 dict
   - 'session:{id}:current_radar'             : 当前选中的雷达位置标识
 """
 import logging
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _SESSION_ID_KEY = 'radar_wave_cache_session'
 _FALLBACK_SESSION_ID = 'no-request-context'
+_SOURCE_ROW_COLUMN = '__source_row_index__'
 
 
 # ============================================================
@@ -91,7 +92,8 @@ def set_data_cache(
 ) -> None:
     """文件加载后，缓存全部预处理与分段结果（per-radar 隔离）。
 
-    segments 作为单个 dict 缓存，避免大量独立条目超出阈值被逐出。
+    segments 作为单个 dict 缓存；上传路径会压缩为源行号数组，避免保存
+    全量 DataFrame 与所有分段 DataFrame 两份数据。
     """
     prefix = _radar_prefix(radar_position)
     _set_current_radar(radar_position)
@@ -101,7 +103,22 @@ def set_data_cache(
     cache.set(f'{prefix}file_path', file_path)
     cache.set(f'{prefix}df', df)
     cache.set(f'{prefix}meta_df', meta_df)
-    cache.set(f'{prefix}segments', segments)
+    # 分段器为了独立索引会复制每个轨迹段。缓存这些 DataFrame 等价于长期
+    # 保存第二份完整数据；上传路径提供源行号时只保留紧凑的整数索引。
+    compact_segments = {}
+    can_compact = bool(segments) and all(
+        hasattr(segment, 'columns') and _SOURCE_ROW_COLUMN in segment.columns
+        for segment in segments.values()
+    )
+    if can_compact:
+        compact_segments = {
+            trajectory_id: segment[_SOURCE_ROW_COLUMN].to_numpy(dtype='int64')
+            for trajectory_id, segment in segments.items()
+        }
+    else:
+        # CLI、旧缓存和外部调用仍可传入原 DataFrame 字典，保持兼容。
+        compact_segments = segments
+    cache.set(f'{prefix}segments', compact_segments)
     logger.info(
         f'缓存已写入 [{radar_position}]: {len(df)}行, '
         f'{len(meta_df)}段, {len(segments)}个轨迹段'
@@ -177,7 +194,16 @@ def get_segment(traj_id: str):
     segments = cache.get(f'{_radar_prefix(radar_key)}segments')
     if segments is None:
         return None
-    return segments.get(traj_id)
+    segment = segments.get(traj_id)
+    if segment is None:
+        return None
+    # 新缓存格式是源 DataFrame 的 iloc 行号；旧格式仍直接返回 DataFrame。
+    if hasattr(segment, 'dtype') and getattr(segment.dtype, 'kind', '') in ('i', 'u'):
+        df = cache.get(f'{_radar_prefix(radar_key)}df')
+        if df is None:
+            return None
+        return df.iloc[segment].copy().reset_index(drop=True)
+    return segment
 
 
 def get_all_segment_ids() -> list:

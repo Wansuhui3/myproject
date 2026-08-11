@@ -81,6 +81,43 @@ def parse_timestamp(ts_str: str) -> float:
         raise ValueError(f'无法解析时间戳: {ts_str!r}')
 
 
+def parse_timestamp_series(values: pd.Series) -> pd.Series:
+    """批量解析时间戳并返回 epoch 秒。
+
+    设备主流的 6/7 段下划线格式走 Pandas 向量化路径；只有少量历史格式
+    回退到单值解析器，避免大文件逐行执行 Python ``apply``。
+    """
+    raw = values.astype(str).str.strip()
+    parsed = pd.Series(np.nan, index=values.index, dtype='float64')
+
+    seven_mask = raw.str.fullmatch(r'\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}_\d{3}')
+    if seven_mask.any():
+        timestamps = pd.to_datetime(
+            raw.loc[seven_mask], format='%Y_%m_%d_%H_%M_%S_%f', errors='coerce',
+        )
+        valid = timestamps.notna()
+        parsed.loc[timestamps.index[valid]] = (
+            (timestamps.loc[valid] - pd.Timestamp('1970-01-01'))
+            / pd.Timedelta(seconds=1)
+        )
+
+    six_mask = raw.str.fullmatch(r'\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}')
+    if six_mask.any():
+        timestamps = pd.to_datetime(
+            raw.loc[six_mask], format='%Y_%m_%d_%H_%M_%S', errors='coerce',
+        )
+        valid = timestamps.notna()
+        parsed.loc[timestamps.index[valid]] = (
+            (timestamps.loc[valid] - pd.Timestamp('1970-01-01'))
+            / pd.Timedelta(seconds=1)
+        )
+
+    fallback_mask = parsed.isna()
+    if fallback_mask.any():
+        parsed.loc[fallback_mask] = raw.loc[fallback_mask].map(parse_timestamp)
+    return parsed
+
+
 def _compute_sample_rate(timestamps_sec: np.ndarray) -> float:
     """根据时间戳序列估算采样率(Hz)。"""
     if len(timestamps_sec) < 2:
@@ -225,7 +262,9 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
         if len(df) < before:
             warnings.append(f'已剔除 {before - len(df)} 行（必要列为空）')
 
-        numeric_cols = _NUMERIC_COLUMNS[role]
+        # Rx_front/Rx_rear/Ry 等测距字段是可选列：存在时参与数值清洗，
+        # 缺失时不能让一份满足 REQUIRED_COLUMNS 的合法文件上传失败。
+        numeric_cols = [column for column in _NUMERIC_COLUMNS[role] if column in df.columns]
         if numeric_cols:
             numeric_df = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
             valid_numeric = np.isfinite(numeric_df).all(axis=1)
@@ -242,7 +281,7 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
             errors.append('没有可用于对齐的有效数据行')
 
     try:
-        timestamps = df['timestamp'].apply(parse_timestamp)
+        timestamps = parse_timestamp_series(df['timestamp'])
         df['timestamp_parsed'] = timestamps
     except Exception as e:
         errors.append(f'时间戳解析失败: {e}')

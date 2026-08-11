@@ -31,6 +31,18 @@ CSV_CHUNK_SIZE_ROWS: 100000     # 每个数据块的读取行数
 # ---- 雷达数据源 ----
 radar_sources: {}
 
+# 多文件同时上传时，按文件名自动区分前/后角雷达。
+RADAR_FILE_PATTERNS:
+  flr:
+    label: "前角雷达"
+    short_label: "FLR 前角"
+    patterns: ["(?:^|[_-])flr(?:[_-]|$)"]
+  rlr:
+    label: "后角雷达"
+    short_label: "RLR 后角"
+    patterns: ["(?:^|[_-])rlr(?:[_-]|$)"]
+UNKNOWN_RADAR_SOURCE_LABEL: "未识别雷达"
+
 # ---- 物理量定义 ----
 quantities:
   Dx:
@@ -80,8 +92,11 @@ CACHE_DEFAULT_TIMEOUT: 0        # 永不超时（桌面应用无过期需求）
 CACHE_THRESHOLD: 5000            # 最大缓存条目数
 
 # ---- 降采样 (plotly-resampler) ----
-# 已禁用：降采样导致 selectedData.points 为空，框选功能无法正常工作
-# 需要时改回 true 即可恢复
+# 静态显示降采样仅影响传给浏览器的点数；统计和导出始终使用原始全量数据。
+# 框选按 selectedData.range 的时间边界回查原始数据，不依赖显示点索引。
+DISPLAY_DOWNSAMPLING_ENABLED: true
+DISPLAY_MAX_POINTS: 3000       # 每张图最多发送的代表性点数（保留分桶极值）
+# 动态 resampler 仍保留为可选方案；默认关闭，避免与 Plotly 框选事件冲突。
 RESAMPLER_ENABLED: false         # 是否启用降采样
 RESAMPLER_MAX_POINTS: 5000      # 超过此点数启用降采样
 RESAMPLER_DEFAULT_N_SAMPLES: 2000   # 降采样后默认显示点数

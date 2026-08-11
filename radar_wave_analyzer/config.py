@@ -31,6 +31,19 @@ _DEFAULTS: dict[str, Any] = {
     'CSV_CHUNK_THRESHOLD_MB': 200,
     'CSV_CHUNK_SIZE_ROWS': 100_000,
     'radar_sources': {},
+    'RADAR_FILE_PATTERNS': {
+        'flr': {
+            'label': '前角雷达',
+            'short_label': 'FLR 前角',
+            'patterns': [r'(?:^|[_-])flr(?:[_-]|$)'],
+        },
+        'rlr': {
+            'label': '后角雷达',
+            'short_label': 'RLR 后角',
+            'patterns': [r'(?:^|[_-])rlr(?:[_-]|$)'],
+        },
+    },
+    'UNKNOWN_RADAR_SOURCE_LABEL': '未识别雷达',
     'quantities': {
         'Dx': {'label': 'Dx', 'unit': 'm'},
         'Dy': {'label': 'Dy', 'unit': 'm'},
@@ -53,7 +66,9 @@ _DEFAULTS: dict[str, Any] = {
     'CACHE_TYPE': 'SimpleCache',
     'CACHE_DEFAULT_TIMEOUT': 0,      # 0 = 永不超时
     'CACHE_THRESHOLD': 200,
-    'RESAMPLER_ENABLED': True,
+    'DISPLAY_DOWNSAMPLING_ENABLED': True,
+    'DISPLAY_MAX_POINTS': 3000,
+    'RESAMPLER_ENABLED': False,
     'RESAMPLER_MAX_POINTS': 5000,
     'RESAMPLER_DEFAULT_N_SAMPLES': 2000,
     'comparison': {
@@ -118,7 +133,7 @@ def _validate_config(cfg: dict[str, Any]) -> None:
     for key in [
         'SAMPLING_PERIOD_MS', 'GAP_THRESHOLD', 'MIN_TRAJ_FRAMES',
         'TIMESTAMP_WINDOW_SEC', 'MAX_OVERLAY_CURVES', 'CSV_CHUNK_THRESHOLD_MB',
-        'CSV_CHUNK_SIZE_ROWS', 'MAX_TRACK_SPEED',
+        'CSV_CHUNK_SIZE_ROWS', 'MAX_TRACK_SPEED', 'DISPLAY_MAX_POINTS',
     ]:
         _number(key, 1)
     for key in ['POS_JUMP_THRESHOLD', 'CACHE_DEFAULT_TIMEOUT']:

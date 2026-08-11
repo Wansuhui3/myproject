@@ -6,6 +6,70 @@ import numpy as np
 import pandas as pd
 
 
+def _prepare_delay_arrays(
+    radar_df: pd.DataFrame,
+    rtk_df: pd.DataFrame,
+    track_id: int,
+    file_index: int = None,
+) -> dict:
+    """一次性筛选、排序并提取延迟扫描需要的 NumPy 数组。"""
+    if file_index is not None:
+        id_mask = (radar_df['ID'] == track_id) & (radar_df['file_index'] == file_index)
+    else:
+        id_mask = radar_df['ID'] == track_id
+    id_df = radar_df.loc[id_mask].sort_values('timestamp_parsed')
+    ordered_rtk = rtk_df.sort_values('timestamp_parsed')
+    return {
+        'radar_ts': id_df['timestamp_parsed'].to_numpy(dtype=float),
+        'radar_x': id_df['Dx'].to_numpy(dtype=float),
+        'radar_y': id_df['Dy'].to_numpy(dtype=float),
+        'rtk_ts': ordered_rtk['timestamp_parsed'].to_numpy(dtype=float),
+        'rtk_x': ordered_rtk['center_x'].to_numpy(dtype=float),
+        'rtk_y': ordered_rtk['center_y'].to_numpy(dtype=float),
+    }
+
+
+def _compute_delay_metrics_arrays(
+    arrays: dict,
+    delay_sec: float,
+    match_threshold_m: float,
+) -> dict:
+    """使用已准备的数组计算一个延迟候选，避免循环内重复复制 DataFrame。"""
+    radar_ts = arrays['radar_ts']
+    rtk_ts = arrays['rtk_ts']
+    total_frames = len(radar_ts)
+    if total_frames == 0 or len(rtk_ts) == 0:
+        return {
+            'rmse': float('inf'), 'matched_frames': 0,
+            'total_frames': total_frames, 'match_rate': 0.0,
+        }
+
+    compensated = radar_ts + delay_sec
+    cx_interp = np.interp(
+        compensated, rtk_ts, arrays['rtk_x'],
+        left=arrays['rtk_x'][0], right=arrays['rtk_x'][-1],
+    )
+    cy_interp = np.interp(
+        compensated, rtk_ts, arrays['rtk_y'],
+        left=arrays['rtk_y'][0], right=arrays['rtk_y'][-1],
+    )
+    dist_err = np.hypot(arrays['radar_x'] - cx_interp, arrays['radar_y'] - cy_interp)
+    in_rtk_range = (compensated >= rtk_ts[0]) & (compensated <= rtk_ts[-1])
+    gated_mask = (dist_err < match_threshold_m) & in_rtk_range
+    matched_frames = int(gated_mask.sum())
+    if matched_frames == 0:
+        return {
+            'rmse': float('inf'), 'matched_frames': 0,
+            'total_frames': total_frames, 'match_rate': 0.0,
+        }
+    return {
+        'rmse': float(np.sqrt(np.mean(dist_err[gated_mask] ** 2))),
+        'matched_frames': matched_frames,
+        'total_frames': total_frames,
+        'match_rate': matched_frames / total_frames,
+    }
+
+
 def _compute_rmse_for_delay(
     radar_df: pd.DataFrame,
     rtk_df: pd.DataFrame,
@@ -37,56 +101,8 @@ def _compute_delay_metrics(
     file_index: int = None,
 ) -> dict:
     """计算一个延迟候选的 RMSE 和有效样本覆盖率。"""
-    if file_index is not None:
-        id_mask = (radar_df['ID'] == track_id) & (radar_df['file_index'] == file_index)
-    else:
-        id_mask = radar_df['ID'] == track_id
-    id_df = radar_df[id_mask].copy().sort_values('timestamp_parsed')
-    if len(id_df) == 0:
-        return {'rmse': float('inf'), 'matched_frames': 0, 'total_frames': 0, 'match_rate': 0.0}
-    if len(rtk_df) == 0:
-        return {
-            'rmse': float('inf'), 'matched_frames': 0,
-            'total_frames': len(id_df), 'match_rate': 0.0,
-        }
-
-    rtk_df = rtk_df.sort_values('timestamp_parsed')
-
-    # 延迟补偿后的雷达时间戳
-    t_compensated = id_df['timestamp_parsed'].values + delay_sec
-
-    # RTK 时间戳
-    rtk_ts = rtk_df['timestamp_parsed'].values
-
-    # 对 center_x, center_y 做线性插值
-    cx_interp = np.interp(t_compensated, rtk_ts, rtk_df['center_x'].values,
-                          left=rtk_df['center_x'].iloc[0],
-                          right=rtk_df['center_x'].iloc[-1])
-    cy_interp = np.interp(t_compensated, rtk_ts, rtk_df['center_y'].values,
-                          left=rtk_df['center_y'].iloc[0],
-                          right=rtk_df['center_y'].iloc[-1])
-
-    dx_err = id_df['Dx'].values - cx_interp
-    dy_err = id_df['Dy'].values - cy_interp
-    dist_err = np.sqrt(dx_err ** 2 + dy_err ** 2)
-
-    # 边界外推会掩盖没有真值的事实，延迟估计不接受 RTK 范围外的帧。
-    in_rtk_range = (t_compensated >= rtk_ts[0]) & (t_compensated <= rtk_ts[-1])
-    gated_mask = (dist_err < match_threshold_m) & in_rtk_range
-    total_frames = len(id_df)
-    matched_frames = int(np.sum(gated_mask))
-    if not np.any(gated_mask):
-        return {
-            'rmse': float('inf'), 'matched_frames': 0,
-            'total_frames': total_frames, 'match_rate': 0.0,
-        }
-
-    return {
-        'rmse': float(np.sqrt(np.mean(dist_err[gated_mask] ** 2))),
-        'matched_frames': matched_frames,
-        'total_frames': total_frames,
-        'match_rate': matched_frames / total_frames if total_frames > 0 else 0.0,
-    }
+    arrays = _prepare_delay_arrays(radar_df, rtk_df, track_id, file_index)
+    return _compute_delay_metrics_arrays(arrays, delay_sec, match_threshold_m)
 
 
 def scan_delay(
@@ -136,11 +152,10 @@ def scan_delay(
     eligible_metrics = []
     delay_samples = []
 
+    arrays = _prepare_delay_arrays(radar_df, rtk_df, track_id, file_index)
     for d_ms in delays_ms:
-        metrics = _compute_delay_metrics(
-            radar_df, rtk_df, track_id, d_ms / 1000.0,
-            match_threshold_m=match_threshold_m,
-            file_index=file_index,
+        metrics = _compute_delay_metrics_arrays(
+            arrays, d_ms / 1000.0, match_threshold_m,
         )
         eligible = (
             np.isfinite(metrics['rmse'])

@@ -4,6 +4,7 @@ Plotly 图表构建模块。
 """
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -19,6 +20,52 @@ try:
     _RESAMPLER_AVAILABLE = True
 except ImportError:
     _RESAMPLER_AVAILABLE = False
+
+
+def _select_display_indices(
+    df: pd.DataFrame,
+    columns: list[str],
+    max_points: Optional[int] = None,
+) -> np.ndarray:
+    """为显示选择代表性行，保留每个时间桶内各曲线的最小/最大值。
+
+    统计、框选和导出继续使用原始 DataFrame；这里只缩小发送给 Plotly 的
+    JSON 体积。多物理量共用同一组索引，保证共享 X 轴严格对齐。
+    """
+    row_count = len(df)
+    if row_count == 0:
+        return np.array([], dtype=np.int64)
+    if max_points is None:
+        max_points = int(get('DISPLAY_MAX_POINTS', 3000))
+    if (not get('DISPLAY_DOWNSAMPLING_ENABLED', True)
+            or row_count <= max_points or max_points < 4):
+        return np.arange(row_count, dtype=np.int64)
+
+    numeric_columns = [column for column in columns if column in df.columns]
+    if not numeric_columns:
+        return np.unique(np.linspace(0, row_count - 1, max_points, dtype=np.int64))
+
+    bucket_count = max(1, (max_points - 2) // (2 * len(numeric_columns)))
+    edges = np.linspace(0, row_count, bucket_count + 1, dtype=np.int64)
+    selected: set[int] = {0, row_count - 1}
+    for column in numeric_columns:
+        values = pd.to_numeric(df[column], errors='coerce').to_numpy(dtype=float)
+        for start, end in zip(edges[:-1], edges[1:]):
+            if end <= start:
+                continue
+            block = values[start:end]
+            finite_positions = np.flatnonzero(np.isfinite(block))
+            if len(finite_positions) == 0:
+                continue
+            finite_values = block[finite_positions]
+            selected.add(int(start + finite_positions[int(np.argmin(finite_values))]))
+            selected.add(int(start + finite_positions[int(np.argmax(finite_values))]))
+
+    result = np.array(sorted(selected), dtype=np.int64)
+    if len(result) > max_points:
+        keep = np.linspace(0, len(result) - 1, max_points, dtype=np.int64)
+        result = result[keep]
+    return result
 
 
 def _wrap_with_resampler(fig: go.Figure, n_points: int) -> go.Figure:
@@ -158,6 +205,8 @@ def build_multi_subplot_graph(
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
               '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     n = len(quantities_list)
+    display_indices = _select_display_indices(seg_df, quantities_list)
+    display_timestamps = timestamps.iloc[display_indices]
 
     fig = make_subplots(
         rows=n, cols=1,
@@ -178,8 +227,8 @@ def build_multi_subplot_graph(
 
         # 主曲线（SVG 渲染，保证 selectedData 框选事件兼容 Plotly 6.x）
         fig.add_trace(go.Scatter(
-            x=timestamps,
-            y=seg_df[qty].values,
+            x=display_timestamps,
+            y=seg_df[qty].to_numpy()[display_indices],
             mode='lines',
             name=qty_label,
             line=dict(color=color, width=1.5),
@@ -260,5 +309,5 @@ def build_multi_subplot_graph(
     )
 
     if use_resampler:
-        return _wrap_with_resampler(fig, len(seg_df))
+        return _wrap_with_resampler(fig, len(display_indices))
     return fig

@@ -226,7 +226,7 @@ def _make_segment_dict(
     """构造单个轨迹段的元信息字典。消除 3 处分段构造处的重复。"""
     n = len(sub_df)
     n_ages = len(ages)
-    return {
+    result = {
         'trajectory_id': traj_id,
         'original_id': id_val,
         'start_time': sub_df.iloc[0]['timestamp'] if n > 0 else None,
@@ -239,6 +239,13 @@ def _make_segment_dict(
         'is_abnormal': is_abnormal,
         'spatial_anomaly': spatial_anomaly,
     }
+    for column in (
+        'radar_source_key', 'radar_source_label', 'radar_source_short_label',
+        'radar_source_recognized', 'radar_source_group',
+    ):
+        if column in sub_df.columns and n > 0:
+            result[column] = sub_df.iloc[0][column]
+    return result
 
 
 def segment_trajectories(
@@ -296,11 +303,28 @@ def segment_trajectories(
 
     all_segments: list[dict] = []
     segments_dict: dict[str, pd.DataFrame] = {}
-    seg_counter: dict[int, int] = {}
+    has_source = 'radar_source_key' in df.columns
+    group_columns = ['ID']
+    if has_source:
+        # 已识别的同一雷达可跨连续分卷统一处理；无法识别的文件由上传层
+        # 赋予独立 radar_source_group，避免不同雷达再次因同号 ID 交织。
+        source_group_column = (
+            'radar_source_group' if 'radar_source_group' in df.columns
+            else 'radar_source_key'
+        )
+        group_columns = [source_group_column]
+        if 'file_index' in df.columns:
+            group_columns.append('file_index')
+        group_columns.append('ID')
 
     # 全局时间排序由数据加载层保证。groupby 避免为每个 ID 重复扫描完整
     # DataFrame，在大量同时目标时将 O(ID 数 × 总行数) 降为单次分组遍历。
-    for id_val, sub in df.groupby('ID', sort=True):
+    for group_key, sub in df.groupby(group_columns, sort=True):
+        if has_source:
+            id_val = group_key[-1]
+        else:
+            id_val = group_key[0] if isinstance(group_key, tuple) else group_key
+        id_val = int(id_val)
         sub = sub.reset_index(drop=True)
         ages = sub['Track_Age'].values.astype(int)
         ts_parsed = sub['timestamp_parsed']
@@ -332,7 +356,28 @@ def segment_trajectories(
             if lc_breaks:
                 seg_breaks = sorted(set(seg_breaks) | set(lc_breaks))
 
-        seg_counter[id_val] = 0
+        seg_counter = 0
+
+        source_key = str(sub.iloc[0].get('radar_source_key', '')).strip()
+        source_file_index = (
+            int(sub.iloc[0]['file_index']) if 'file_index' in sub.columns else None
+        )
+
+        def _trajectory_id(number: int) -> str:
+            if source_key:
+                safe_source = ''.join(
+                    char if char.isalnum() or char in ('-', '_') else '_'
+                    for char in source_key
+                )
+                group_suffix = f'_f{source_file_index}' if source_file_index is not None else ''
+                source_group = str(sub.iloc[0].get('radar_source_group', source_key))
+                if source_group != source_key:
+                    group_suffix += '_' + ''.join(
+                        char if char.isalnum() or char in ('-', '_') else '_'
+                        for char in source_group
+                    )
+                return f'{safe_source}{group_suffix}__{id_val}_seg{number}'
+            return f'{id_val}_seg{number}'
 
         def _seg_spatial_anomaly(seg_df: pd.DataFrame) -> bool:
             if not available_pos_cols:
@@ -342,8 +387,8 @@ def segment_trajectories(
 
         if len(seg_breaks) == 0:
             # 无断点 → 单条轨迹
-            seg_counter[id_val] += 1
-            traj_id = f'{id_val}_seg{seg_counter[id_val]}'
+            seg_counter += 1
+            traj_id = _trajectory_id(seg_counter)
 
             unwrapped = _unwrap_track_age(ages, wraps)
             is_abnormal = not _check_unwrapped_monotonicity(unwrapped)
@@ -356,8 +401,8 @@ def segment_trajectories(
             # 有断点 → 按断点切分
             start_idx = 0
             for break_idx in seg_breaks:
-                seg_counter[id_val] += 1
-                traj_id = f'{id_val}_seg{seg_counter[id_val]}'
+                seg_counter += 1
+                traj_id = _trajectory_id(seg_counter)
 
                 # 每个轨迹段必须拥有从 0 开始的本地索引。框选、高亮和局部统计
                 # 均以段内位置工作；保留父分组索引会导致第二段及后续段失效。
@@ -376,8 +421,8 @@ def segment_trajectories(
                 start_idx = break_idx
 
             # 最后一段
-            seg_counter[id_val] += 1
-            traj_id = f'{id_val}_seg{seg_counter[id_val]}'
+            seg_counter += 1
+            traj_id = _trajectory_id(seg_counter)
 
             seg_sub = sub.iloc[start_idx:].copy().reset_index(drop=True)
             seg_ages = ages[start_idx:]

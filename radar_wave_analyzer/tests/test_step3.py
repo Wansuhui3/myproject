@@ -60,6 +60,20 @@ class TestCacheModule:
         assert get_segment('s1')['x'].iloc[0] == 10
         assert get_segment('nonexistent') is None
 
+    def test_compact_segment_indices_restore_rows_from_canonical_df(self, app_ctx):
+        """上传路径只缓存源行号，读取轨迹时仍应恢复正确顺序的数据。"""
+        from cache import set_data_cache, get_segment, clear_data_cache
+        clear_data_cache()
+        df = pd.DataFrame({'x': [10, 20, 30]})
+        segment = pd.DataFrame({
+            'x': [30, 10],
+            '__source_row_index__': [2, 0],
+        })
+        set_data_cache('test.csv', 'front', df, pd.DataFrame(), {'s1': segment})
+        restored = get_segment('s1')
+        assert restored['x'].tolist() == [30, 10]
+        assert '__source_row_index__' not in restored.columns
+
     def test_clear_cache(self, app_ctx):
         """clear_data_cache 清空所有条目。"""
         from cache import (set_data_cache, get_df, get_segment, clear_data_cache,
@@ -134,6 +148,23 @@ class TestResampler:
             assert type(fig).__name__ == 'Figure'
         else:
             assert type(fig).__name__ in ('Figure', 'FigureResampler')
+
+    def test_large_data_display_payload_is_bounded(self, app_ctx):
+        """静态显示降采样限制浏览器点数，同时保留首尾时间边界。"""
+        from components.graph_builder import build_multi_subplot_graph
+        from config import get
+        n = 10_000
+        timestamps = pd.date_range('2026-01-01', periods=n, freq='50ms')
+        values = np.sin(np.linspace(0, 30, n))
+        values[5432] = 25.0
+        df = pd.DataFrame({'timestamp_parsed': timestamps, 'Dx': values})
+
+        fig = build_multi_subplot_graph(df, ['Dx'], 't1', use_resampler=False)
+        main_trace = fig.data[0]
+        assert len(main_trace.x) <= get('DISPLAY_MAX_POINTS', 3000)
+        assert main_trace.x[0] == timestamps[0]
+        assert main_trace.x[-1] == timestamps[-1]
+        assert max(main_trace.y) == 25.0
 
     def test_export_bypass_resampler(self, app_ctx):
         """use_resampler=False 时导出图不包装降采样。"""

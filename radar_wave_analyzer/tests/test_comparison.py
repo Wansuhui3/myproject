@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -118,6 +119,21 @@ def test_comparison_parser_drops_non_numeric_measurements():
     assert result['errors'] == []
     assert len(result['df']) == 1
     assert any('不是有限数值' in warning for warning in result['warnings'])
+
+
+def test_comparison_parser_vectorized_timestamps_keep_millisecond_scale():
+    """批量时间戳解析在不同 Pandas 时间分辨率下都应保持 50ms 间隔。"""
+    content = (
+        'timestamp,ID,Track_Age,Dx,Dy,Vx,Vy\n'
+        '2026_04_20_10_00_00_000,7,1,1.0,2.0,0.1,0.2\n'
+        '2026_04_20_10_00_00_050,7,2,1.1,2.0,0.1,0.2\n'
+    ).encode('utf-8')
+
+    result = load_csv_file(content, 'radar.csv')
+
+    assert result['errors'] == []
+    timestamps = result['df']['timestamp_parsed'].to_numpy()
+    assert timestamps[1] - timestamps[0] == pytest.approx(0.05)
 
 
 def test_comparison_parser_reports_missing_velocity_columns():

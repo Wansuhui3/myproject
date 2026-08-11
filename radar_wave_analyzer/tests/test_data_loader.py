@@ -7,7 +7,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import pytest
-from core.data_loader import parse_timestamp, parse_timestamp_series, load_csv
+from core.data_loader import identify_radar_source, parse_timestamp, parse_timestamp_series, load_csv
+
+
+def test_identify_front_and_rear_radar_from_filename():
+    front = identify_radar_source('CD701_flr_track_2026_07_28_10_16_53.csv')
+    rear = identify_radar_source('CD701_rlr_track_2026_07_28_10_16_53.csv')
+    unknown = identify_radar_source('CD701_track_2026_07_28.csv')
+
+    assert front['key'] == 'flr' and front['recognized'] is True
+    assert rear['key'] == 'rlr' and rear['recognized'] is True
+    assert unknown['key'] == 'unknown' and unknown['recognized'] is False
 
 
 class TestParseTimestamp:

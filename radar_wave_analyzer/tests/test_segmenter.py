@@ -196,6 +196,31 @@ class TestSegmenter:
         meta, segs = segment_trajectories(df)
         assert len(meta) == 1
 
+    def test_front_rear_same_id_interleaved_are_isolated(self):
+        """前后雷达同 ID、同时间范围的数据不得逐帧互相切断。"""
+        df = _make_test_df([
+            {'timestamp': '2026_07_28_10_35_51_000', 'ID': 7, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 1.0},
+            {'timestamp': '2026_07_28_10_35_51_000', 'ID': 7, 'Track_Age': 31, 'Dx': -8.0, 'Dy': -1.0},
+            {'timestamp': '2026_07_28_10_35_51_050', 'ID': 7, 'Track_Age': 2, 'Dx': 10.1, 'Dy': 1.0},
+            {'timestamp': '2026_07_28_10_35_51_050', 'ID': 7, 'Track_Age': 32, 'Dx': -8.1, 'Dy': -1.0},
+            {'timestamp': '2026_07_28_10_35_51_100', 'ID': 7, 'Track_Age': 3, 'Dx': 10.2, 'Dy': 1.0},
+            {'timestamp': '2026_07_28_10_35_51_100', 'ID': 7, 'Track_Age': 33, 'Dx': -8.2, 'Dy': -1.0},
+        ])
+        df['file_index'] = [0, 1, 0, 1, 0, 1]
+        df['radar_source_key'] = ['flr', 'rlr', 'flr', 'rlr', 'flr', 'rlr']
+        df['radar_source_group'] = df['radar_source_key']
+        df['radar_source_label'] = ['前角雷达', '后角雷达'] * 3
+        df['radar_source_short_label'] = ['FLR 前角', 'RLR 后角'] * 3
+        df['radar_source_recognized'] = True
+
+        meta, segs = segment_trajectories(df)
+
+        assert len(meta) == 2
+        assert sorted(meta['total_frames'].tolist()) == [3, 3]
+        assert set(meta['radar_source_key']) == {'flr', 'rlr'}
+        assert 'flr_f0__7_seg1' in segs
+        assert 'rlr_f1__7_seg1' in segs
+
     # ---- 规则 F: 位置不连续强制切分（同 ID 复用但 Track_Age 不降） ----
 
     @pytest.fixture

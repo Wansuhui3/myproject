@@ -73,9 +73,9 @@ def _insert_radar_gap_breaks(timestamps, values, hover_texts, gap_factor: float 
     return plot_x, plot_y, plot_text, marker_x, marker_y, marker_text
 
 try:
-    from .graph_builder import _compute_subplot_y_domains, _wrap_with_resampler
+    from .graph_builder import _compute_subplot_y_domains, _select_display_indices, _wrap_with_resampler
 except ImportError:
-    from graph_builder import _compute_subplot_y_domains, _wrap_with_resampler  # type: ignore
+    from graph_builder import _compute_subplot_y_domains, _select_display_indices, _wrap_with_resampler  # type: ignore
 
 try:
     from ..config import get
@@ -368,6 +368,16 @@ def build_comparison_subplots(
         fig.update_layout(title='请选择对比指标', template='plotly_white')
         return fig
 
+    # 只缩小浏览器显示数据，误差统计仍由调用方基于完整 aligned_df 计算。
+    display_columns: list[str] = []
+    for quantity in selected_quantities:
+        info = quantities_config.get(quantity, {})
+        display_columns.extend([
+            info.get('radar_col', ''), info.get('rtk_col', ''), info.get('field', ''),
+        ])
+    display_indices = _select_display_indices(aligned_df, display_columns)
+    aligned_df = aligned_df.iloc[display_indices].reset_index(drop=True)
+
     # 转换为相对时间（秒），避免 epoch 秒数在坐标轴上显示为科学计数法
     t0 = aligned_df['timestamp_parsed'].iloc[0]
     timestamps = (aligned_df['timestamp_parsed'] - t0).to_numpy(dtype=float)
@@ -387,6 +397,12 @@ def build_comparison_subplots(
     rtk_curve_time_labels = None
     if rtk_curve_df is not None and not rtk_curve_df.empty and 'timestamp_parsed' in rtk_curve_df.columns:
         rtk_curve_df = rtk_curve_df.sort_values('timestamp_parsed').reset_index(drop=True)
+        rtk_columns = [
+            quantities_config.get(quantity, {}).get('rtk_col', '').replace('rtk_', '', 1)
+            for quantity in selected_quantities
+        ]
+        rtk_display_indices = _select_display_indices(rtk_curve_df, rtk_columns)
+        rtk_curve_df = rtk_curve_df.iloc[rtk_display_indices].reset_index(drop=True)
         rtk_curve_timestamps = (rtk_curve_df['timestamp_parsed'] - t0).to_numpy(dtype=float)
         rtk_curve_time_labels = _fmt_ts_vec(rtk_curve_df['timestamp_parsed'].values)
 

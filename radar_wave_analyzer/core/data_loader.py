@@ -2,6 +2,8 @@
 CSV 数据加载、时间戳解析、预处理模块。
 """
 import logging
+import os
+import re
 from typing import Optional
 
 import numpy as np
@@ -16,6 +18,37 @@ logger = logging.getLogger(__name__)
 
 # 必需的 CSV 字段
 _REQUIRED_COLUMNS = ['timestamp', 'ID', 'Track_Age']
+
+
+def identify_radar_source(filename: str) -> dict[str, object]:
+    """根据配置的文件名规则识别雷达来源。"""
+    basename = os.path.basename(str(filename or '')).strip()
+    rules = get('RADAR_FILE_PATTERNS', {}) or {}
+    for source_key, source_config in rules.items():
+        patterns = source_config.get('patterns', []) if isinstance(source_config, dict) else []
+        for pattern in patterns:
+            try:
+                if re.search(str(pattern), basename, flags=re.IGNORECASE):
+                    return {
+                        'key': str(source_key),
+                        'label': str(source_config.get('label', source_key)),
+                        'short_label': str(source_config.get(
+                            'short_label', source_config.get('label', source_key),
+                        )),
+                        'recognized': True,
+                        'filename': basename,
+                    }
+            except re.error as exc:
+                logger.warning('忽略无效雷达文件名规则 %r: %s', pattern, exc)
+
+    unknown_label = str(get('UNKNOWN_RADAR_SOURCE_LABEL', '未识别雷达'))
+    return {
+        'key': 'unknown',
+        'label': unknown_label,
+        'short_label': '未识别',
+        'recognized': False,
+        'filename': basename,
+    }
 
 
 def parse_timestamp(ts_str: str) -> pd.Timestamp:
