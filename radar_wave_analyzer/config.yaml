@@ -57,6 +57,15 @@ quantities:
   Vabs:
     label: "Vabs"
     unit: "m/s"
+  Rx_front:
+    label: "Rx_front"
+    unit: "m"
+  Rx_rear:
+    label: "Rx_rear"
+    unit: "m"
+  Ry:
+    label: "Ry"
+    unit: "m"
 
 # ---- 导出 ----
 EXPORT_ENCODING: "utf-8-sig"    # CSV 导出编码（BOM 兼容 Excel）

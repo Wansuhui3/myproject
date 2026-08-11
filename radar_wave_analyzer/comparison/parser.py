@@ -28,7 +28,7 @@ _REQUIRED_COLUMNS = {
 }
 
 _NUMERIC_COLUMNS = {
-    'radar': ['Dx', 'Dy', 'Vx', 'Vy'],
+    'radar': ['Dx', 'Dy', 'Vx', 'Vy', 'Rx_front', 'Rx_rear', 'Ry'],
     'rtk': ['center_x', 'center_y', 'Vx', 'Vy'],
     'unknown': [],
 }
@@ -166,6 +166,15 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
         'Vy': 'Vy',
         'vy': 'Vy',
         'VY': 'Vy',
+        'Rx_front': 'Rx_front',
+        'RX_front': 'Rx_front',
+        'rx_front': 'Rx_front',
+        'Rx_rear': 'Rx_rear',
+        'RX_rear': 'Rx_rear',
+        'rx_rear': 'Rx_rear',
+        'Ry': 'Ry',
+        'RY': 'Ry',
+        'ry': 'Ry',
         'center_x': 'center_x',
         'Center_X': 'center_x',
         'CENTER_X': 'center_x',
