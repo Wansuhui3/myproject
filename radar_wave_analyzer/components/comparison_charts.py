@@ -1,7 +1,8 @@
 """
 真值对比图表构建模块（编排器）。
 构建雷达 vs RTK 的对比子图（双线叠加/误差散点）。
-子图绘制实现见 comparison_subplots，时间格式化见 comparison_time，
+子图绘制实现见 comparison_overlay（叠加主图）/ comparison_subplots
+（误差、阈值散点），时间格式化见 comparison_time，
 雷达中断处理见 radar_gap，共享工具与统一色板见 chart_common。
 """
 from typing import Optional
@@ -13,12 +14,8 @@ from plotly.subplots import make_subplots
 
 from ..config import get
 from .chart_common import _select_display_indices, _wrap_with_resampler
-from .comparison_subplots import (
-    _add_fail_highlights,
-    _build_error_subplot,
-    _build_overlay_subplot,
-    _build_scatter_subplot,
-)
+from .comparison_overlay import _add_fail_highlights, _build_overlay_subplot
+from .comparison_subplots import _build_error_subplot, _build_scatter_subplot
 from .comparison_time import _fmt_ts_vec
 from .radar_gap import _find_radar_gap_indices
 
