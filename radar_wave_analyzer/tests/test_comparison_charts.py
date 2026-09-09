@@ -6,8 +6,9 @@ import pandas as pd
 import pytest
 
 from radar_wave_analyzer.components.comparison_charts import (  # noqa: E402
-    _fmt_ts, build_comparison_subplots,
+    build_comparison_subplots,
 )
+from radar_wave_analyzer.components.comparison_time import _fmt_ts  # noqa: E402
 
 
 def test_tooltip_epoch_uses_the_same_local_timezone_as_the_date_axis():

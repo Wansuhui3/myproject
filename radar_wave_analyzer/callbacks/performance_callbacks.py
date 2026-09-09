@@ -36,8 +36,8 @@ from ..comparison.performance import evaluate_all_metrics
 
 from ..components.performance_panel import (
     render_performance_table, render_performance_body,
-    render_performance_snapshot_summary,
 )
+from ..components.performance_summary import render_performance_snapshot_summary
 
 from ..comparison.service import (
     execute_alignment, execute_selected_segments_alignment, resolve_track_selection,

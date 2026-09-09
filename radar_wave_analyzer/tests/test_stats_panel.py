@@ -5,7 +5,7 @@ from radar_wave_analyzer.components.comparison_stats_panel import (
 from radar_wave_analyzer.components.wave_stats_panel import (
     render_wave_snapshot_summary,
 )
-from radar_wave_analyzer.components.performance_panel import render_performance_distance_summary
+from radar_wave_analyzer.components.performance_summary import render_performance_distance_summary
 
 
 def test_summary_plain_text_skips_snapshot_meta():
