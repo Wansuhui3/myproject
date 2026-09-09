@@ -1,9 +1,9 @@
 """波动分析数据加载域回调：雷达切换 / 上传解析 / 时间筛选 / 物理量刷新 / 清空。
 
-交互域回调（ID 点击、框选、摘要快照）见 wave_callbacks。
+交互域回调（ID 点击、框选、摘要快照）见 wave_callbacks；
+上传解析/合并/分段的纯数据管线见 wave_upload_pipeline。
 """
-import numpy as np
-import pandas as pd
+import logging
 import plotly.graph_objects as go
 from dash import Input, Output, State, callback, no_update, html
 from dash.exceptions import PreventUpdate
@@ -11,19 +11,13 @@ from dash.exceptions import PreventUpdate
 from ..config import get
 
 from ..cache import (
-    set_data_cache,
     get_df, get_meta_df, get_radar_position, get_file_path,
     get_segment,
     clear_data_cache,
     switch_radar,
 )
 
-from ..core.data_loader import (
-    identify_radar_source, load_csv_from_bytes, parse_timestamp, get_time_range,
-)
-from ..core.json_loader import is_json_filename, load_json_from_bytes
-
-from ..core.segmenter import segment_trajectories
+from ..core.data_loader import parse_timestamp, get_time_range
 
 from ..components.wave_stats_panel import (
     render_multi_full_stats, render_multi_full_stats_placeholder,
@@ -32,7 +26,6 @@ from ..components.wave_stats_panel import (
 
 from ..components.graph_builder import build_multi_subplot_graph
 
-from .helpers import _decode_upload_contents
 from .wave_helpers import (
     _compute_quantities_stats,
     _discover_quantity_columns,
@@ -46,7 +39,9 @@ from .wave_views import (
     _target_meta,
     _target_parts,
 )
+from .wave_upload_pipeline import build_upload_caches, parse_upload_payloads
 
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -207,135 +202,14 @@ def on_upload_csv(contents_list, filenames, radar_key):
     elif not filenames:
         filenames = [f'file_{i+1}.csv' for i in range(len(contents_list))]
 
-    all_dfs = []
-    errors = []
-    source_files: dict[str, dict] = {}
-    # file_index 按展开后条目递增：JSON 单文件多话题（FLR/RLR 共存）时，
-    # 每个话题独立编号，防止不同雷达同 ID 同时间戳的数据在合并去重时被误删。
-    file_seq = 0
-    for content, fn in zip(contents_list, filenames):
-        try:
-            data_bytes = _decode_upload_contents(content)
-            if is_json_filename(fn):
-                json_result = load_json_from_bytes(data_bytes, fn)
-                # 错误消息已含 "文件名·话题名" 前缀，无需重复包装
-                errors.extend(json_result['errors'])
-                # payload: (DataFrame, 来源识别名, 溯源显示名)
-                payloads = [
-                    (topic['df'], topic['topic'], topic['label'])
-                    for topic in json_result['topics']
-                ]
-            else:
-                df = load_csv_from_bytes(data_bytes, fn)
-                payloads = [(df, str(fn), str(fn))]
-        except ValueError as e:
-            errors.append(f'{fn}: {e}')
-            continue
-        except Exception as e:
-            errors.append(f'{fn}: {e}')
-            continue
-
-        for df, source_name, display_name in payloads:
-            # 空白文件（0 字节/仅表头/全空行）会解析出 0 行 DataFrame，
-            # 必须跳过，否则后续 df['radar_source_group'].iloc[0] 会抛
-            # IndexError 导致回调 500、前端一直显示加载中。
-            if df is None or len(df) == 0:
-                errors.append(f'{display_name}: 文件内容为空或无有效数据行')
-                continue
-            # JSON 用话题名识别雷达来源（如 RLR_OBJ_object 命中既有 rlr 规则）；
-            # CSV 保持按文件名识别，行为与历史版本一致。
-            source = identify_radar_source(source_name)
-            df['file_index'] = file_seq
-            df['source_filename'] = display_name
-            df['radar_source_key'] = str(source['key'])
-            df['radar_source_label'] = str(source['label'])
-            df['radar_source_short_label'] = str(source['short_label'])
-            df['radar_source_recognized'] = bool(source['recognized'])
-            # 未识别来源互相隔离（按条目粒度），防止未知来源的同号 ID 重新交织。
-            df['radar_source_group'] = (
-                str(source['key']) if source['recognized'] else f'unknown_file_{file_seq}'
-            )
-            summary_key = str(df['radar_source_group'].iloc[0])
-            source_summary = source_files.setdefault(summary_key, {
-                'key': str(source['key']),
-                'short_label': str(source['short_label']),
-                'recognized': bool(source['recognized']),
-                'filenames': [],
-            })
-            source_summary['filenames'].append(display_name)
-            all_dfs.append(df)
-            file_seq += 1
+    all_dfs, errors, source_files = parse_upload_payloads(contents_list, filenames)
 
     if not all_dfs:
         err_msg = html.Span(f'所有文件解析失败: {"；".join(errors)}', style={'color': '#dc2626'})
         return _clear_state(err_msg)
 
-    if len(all_dfs) == 1:
-        merged_df = all_dfs[0]
-    else:
-        merged_df = pd.concat(all_dfs, ignore_index=True)
-        # 跨文件、跨雷达的相同 ID/时间戳均保留；仅文件内部去重。
-        merged_df = merged_df.drop_duplicates(subset=['file_index', 'ID', 'timestamp_parsed'], keep='first')
-        merged_df = merged_df.sort_values('timestamp_parsed').reset_index(drop=True)
-
-    # 分段缓存只保存源行号，不长期保留每段 DataFrame 的重复副本。
-    # 全局分段的结果同时是各来源缓存的唯一来源：不能再为每个来源重复
-    # segment_trajectories()，否则上传 N 个来源会额外执行 N 次完整分段扫描。
-    source_row_column = '__source_row_index__'
-    merged_df[source_row_column] = np.arange(len(merged_df), dtype=np.int64)
-    meta_df, segments = segment_trajectories(merged_df)
-    # segment_trajectories 已为每段保留独立副本，故可从主表移除内部列；
-    # set_data_cache 仍能从 segments 压缩出行号索引。
-    merged_df.drop(columns=[source_row_column], inplace=True)
-
     upload_label = filenames[0] if len(filenames) == 1 else f'{len(filenames)}个文件'
-    # 混合上传时不能把 FLR+RLR 合并数据只写入当前一个 radar_key。
-    # 否则切换到另一个雷达源时会命中空缓存，主可视化页面被清空。
-    # 保留一个 combined 缓存，同时为每个已识别来源建立独立缓存。
-    clear_data_cache()
-    set_data_cache(upload_label, 'combined', merged_df, meta_df, segments)
-    source_keys = {
-        str(value).strip()
-        for value in merged_df.get('radar_source_key', pd.Series(dtype=str)).dropna().unique()
-        if str(value).strip()
-    }
-    for source_key in sorted(source_keys):
-        # merged_df 的索引仍是全局源行号；为来源副本显式保留该映射，
-        # 之后再 reset_index 生成其本地 iloc 行号。
-        source_df = merged_df[
-            merged_df['radar_source_key'].astype(str) == source_key
-        ].copy()
-        source_df[source_row_column] = source_df.index.to_numpy(dtype=np.int64)
-        source_df.reset_index(drop=True, inplace=True)
-        if source_df.empty:
-            continue
-
-        # 将全局段内的源行号映射为 source_df 的本地 iloc 行号。这样既能
-        # 保留 get_segment() 的紧凑索引契约，又不需要为来源副本重新分段。
-        source_meta = meta_df[
-            meta_df['radar_source_key'].astype(str) == source_key
-        ].copy()
-        global_to_local = pd.Series(
-            np.arange(len(source_df), dtype=np.int64),
-            index=source_df[source_row_column].to_numpy(dtype=np.int64),
-        )
-        source_segments = {}
-        for trajectory_id in source_meta.get('trajectory_id', pd.Series(dtype=str)):
-            global_segment = segments.get(trajectory_id)
-            if global_segment is None:
-                continue
-            local_rows = global_to_local.reindex(
-                global_segment[source_row_column].to_numpy(dtype=np.int64)
-            ).to_numpy()
-            if np.isnan(local_rows).any():
-                logger.warning('来源 %s 的轨迹段 %s 索引映射不完整，已跳过',
-                               source_key, trajectory_id)
-                continue
-            source_segments[trajectory_id] = pd.DataFrame({
-                source_row_column: local_rows.astype(np.int64),
-            })
-        source_df.drop(columns=[source_row_column], inplace=True)
-        set_data_cache(upload_label, source_key, source_df, source_meta, source_segments)
+    merged_df, meta_df, segments, source_keys = build_upload_caches(all_dfs, upload_label)
 
     # 恢复上传前选择的来源；若该来源不在本次数据中则使用 combined。
     active_key = radar_key if radar_key in source_keys else 'combined'
