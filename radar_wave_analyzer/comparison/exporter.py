@@ -1,82 +1,575 @@
 """
 对比结果导出模块。
-支持导出对齐结果CSV、汇总统计JSON、对比图表PNG。
+导出真值对齐与性能验收 xlsx 工作簿（文件路径 / 浏览器下载二进制）。
 """
-import json
 import logging
 import os
+import re
 
+import numpy as np
 import pandas as pd
 
-try:
-    from ..config import get
-except ImportError:
-    from config import get  # type: ignore
+from ..config import get
+from .performance import STATUS_FAIL
 
 logger = logging.getLogger(__name__)
 
-# CSV 公式注入防护：以 =、+、-、@ 开头的单元格前加单引号
-_CSV_INJECTION_CHARS = frozenset(('=', '+', '-', '@'))
+
+_PERF_SUMMARY_COLUMNS = [
+    'metric', 'distance_bin', 'sample_count', 'rmse',
+    'normal_pass_count', 'accuracy', 'accuracy_requirement',
+    'accuracy_pass', 'three_frame_index', 'three_frame_pass',
+    'violation_window_count', 'longest_violation_run',
+    'worst_window_start', 'worst_window_end',
+    'max_error_in_worst_window', 'status', 'failure_reasons',
+]
 
 
-def _sanitize_csv_cell(value) -> str:
-    """防御性转义：为可能被 Excel 解释为公式的单元格添加前缀。"""
-    s = str(value)
-    if s and s[0] in _CSV_INJECTION_CHARS:
-        return "'" + s
-    return s
+def _build_performance_summary_df(results: dict) -> pd.DataFrame:
+    """构造验收汇总表：每物理量、每距离段一行，供 xlsx「验收汇总」sheet 使用。"""
+    rows = []
+    for metric, result in (results or {}).items():
+        if not isinstance(result, dict):
+            continue
+        for b in result.get('bins') or []:
+            row = {'metric': metric}
+            for col in _PERF_SUMMARY_COLUMNS[1:]:
+                value = b.get(col)
+                if col == 'accuracy' and isinstance(value, (int, float)):
+                    value = round(float(value) * 100, 2)
+                if col == 'failure_reasons':
+                    value = '; '.join(b.get('failure_reasons') or [])
+                row[col] = value
+            rows.append(row)
+    return pd.DataFrame(rows, columns=_PERF_SUMMARY_COLUMNS)
 
 
-def export_aligned_csv(aligned_df: pd.DataFrame, filepath: str) -> str:
-    """导出对齐结果CSV。
+_STANDARD_PAIRS = {
+    'radar_Dx': ('Dx', 'rtk_center_x'),
+    'radar_Dy': ('Dy', 'rtk_center_y'),
+    'radar_Vx': ('Vx', 'rtk_Vx'),
+    'radar_Vy': ('Vy', 'rtk_Vy'),
+}
 
-    Args:
-        aligned_df: 对齐结果DataFrame。
-        filepath: 导出文件路径。
 
-    Returns:
-        导出成功消息，或错误信息。
+def derive_quantity_pairs(aligned_df: pd.DataFrame) -> dict:
+    """从对齐结果推导 物理量标签 → (雷达列, 真值列) 配对。
+
+    优先级：
+    1. ``error[雷达字段-真值字段]`` 列直接编码了映射配对（真值字段名
+       可以与雷达字段名不同）；
+    2. 同名直配 ``radar[X]`` ↔ ``rtk[X]``；
+    3. 标准通道 ``radar_Dx`` ↔ ``rtk_center_x`` 等（无自定义映射时）。
+    """
+    columns = [str(c) for c in aligned_df.columns]
+    pairs: dict[str, tuple[str, str]] = {}
+
+    def _resolve(label: str, radar_col: str, rtk_col: str) -> None:
+        rtk = rtk_col if rtk_col in columns else ''
+        if radar_col in columns and label not in pairs:
+            pairs[label] = (radar_col, rtk)
+
+    # 1) error[radar-rtk] 编码配对；rtk 字段名可能含 '-'，逐切分点验证
+    for col in columns:
+        if not col.startswith('error[') or not col.endswith(']'):
+            continue
+        body = col[len('error['):-1]
+        for idx, ch in enumerate(body):
+            if ch != '-':
+                continue
+            radar_label, rtk_label = body[:idx], body[idx + 1:]
+            radar_col, rtk_col = f'radar[{radar_label}]', f'rtk[{rtk_label}]'
+            if radar_col in columns and rtk_col in columns:
+                _resolve(radar_label, radar_col, rtk_col)
+                break
+
+    # 2) 同名直配
+    for col in columns:
+        if col.startswith('radar[') and col.endswith(']'):
+            label = col[len('radar['):-1]
+            _resolve(label, col, f'rtk[{label}]')
+
+    # 3) 标准通道（无任何 radar[...] 自定义列时兜底）
+    if not pairs:
+        for radar_col, (label, rtk_col) in _STANDARD_PAIRS.items():
+            _resolve(label, radar_col, rtk_col)
+    return pairs
+
+
+def _perf_bin_lookup_maps(perf_result: dict) -> tuple[dict, dict]:
+    """根据验收结果构造段索引 → (距离段标签, RMSE) 映射，键为 frames.distance_bin。
+
+    binned 模式 bins[i] 与帧内 bin_index 一一对应；single_limit 模式帧内
+    distance_bin 恒为 -1，唯一 bins 行即“完整曲线”。
+    """
+    bins = perf_result.get('bins') or []
+    if perf_result.get('mode') == 'single_limit':
+        first = bins[0] if bins else {}
+        return ({-1: first.get('distance_bin') or '完整曲线'},
+                {-1: first.get('rmse')})
+    label_map: dict = {}
+    rmse_map: dict = {}
+    for index, b in enumerate(bins):
+        label_map[index] = b.get('distance_bin')
+        rmse_map[index] = b.get('rmse')
+    return label_map, rmse_map
+
+
+def _perf_frame_columns(
+        frames: pd.DataFrame, label: str,
+        label_map: dict, rmse_map: dict) -> dict:
+    """从逐帧结果构造单物理量性能列（绝对误差/阈值/通过/三帧违规/距离段/RMSE）。"""
+    index = pd.to_numeric(frames.get('distance_bin'), errors='coerce')
+    distance_labels = index.map(
+        lambda v: label_map.get(int(v)) if pd.notna(v) and int(v) in label_map else None)
+    distance_rmse = index.map(
+        lambda v: rmse_map.get(int(v)) if pd.notna(v) and int(v) in rmse_map else None)
+    return {
+        f'{label}|绝对误差': frames.get('abs_error'),
+        f'{label}|普通阈值': frames.get('normal_limit'),
+        f'{label}|通过': pd.Series(frames['normal_pass']).map({True: '✓', False: '✗'}),
+        f'{label}|三帧违规': pd.Series(frames['three_frame_violation']).map({True: '违规'}),
+        f'{label}|距离段': distance_labels,
+        f'{label}|距离段RMSE': distance_rmse,
+    }
+
+
+# Sheet2「验收汇总」中文表头（RMSE 为通用缩写保留英文）
+_SUMMARY_HEADER_ZH = {
+    'metric': '物理量',
+    'distance_bin': '距离段',
+    'sample_count': '样本数',
+    'rmse': 'RMSE',
+    'normal_pass_count': '合格帧数',
+    'accuracy': '准确率(%)',
+    'accuracy_requirement': '准确率要求',
+    'accuracy_pass': '准确率通过',
+    'three_frame_index': '连续三帧指标',
+    'three_frame_pass': '三帧通过',
+    'violation_window_count': '违规窗口数',
+    'longest_violation_run': '最长连续违规帧',
+    'worst_window_start': '最严重窗口起点',
+    'worst_window_end': '最严重窗口终点',
+    'max_error_in_worst_window': '窗口最大误差',
+    'status': '结论',
+    'failure_reasons': '不通过原因',
+}
+
+
+def _mark_fail_cells_red(ws, headers: tuple, last_row: int) -> None:
+    """Sheet1 中数据不合格处标红：|通过=✗ 的行红显误差/阈值/通过，
+    |三帧违规=违规 的格单独红显。"""
+    from openpyxl.styles import Font
+    red_font = Font(color='FFDC2626', bold=True)
+    # openpyxl 1-based 列号：|绝对误差 在 |通过 左侧 2 格，|普通阈值 左侧 1 格，
+    # |三帧违规 右侧 1 格
+    pass_cols = [idx + 1 for idx, h in enumerate(headers)
+                 if str(h).endswith('|通过')]
+    for pass_col in pass_cols:
+        err_col, limit_col, viol_col = pass_col - 2, pass_col - 1, pass_col + 1
+        for row in range(2, last_row + 1):
+            if ws.cell(row=row, column=pass_col).value == '✗':
+                for col in (err_col, limit_col, pass_col):
+                    ws.cell(row=row, column=col).font = red_font
+            if viol_col <= len(headers) and ws.cell(
+                    row=row, column=viol_col).value == '违规':
+                ws.cell(row=row, column=viol_col).font = red_font
+
+
+def export_comparison_workbook(
+        aligned_df: pd.DataFrame,
+        quantities: dict,
+        perf_results: dict,
+        filepath: str,
+        rules: dict | None = None,
+) -> str:
+    """导出真值对齐与性能验收工作簿（xlsx）到文件路径。
+
+    每个物理量一个 sheet（页首评判标准块 + 活公式明细表，不合格红字），
+    另有全局「验收汇总」sheet（含准确率算式与通过条件列，不通过行红字）。
     """
     try:
-        encoding = get('comparison', {}).get('export_encoding', 'utf-8-sig')
-        # 只导出核心列（去掉中间计算列）
-        export_cols = [
-            'timestamp', 'radar_Dx', 'radar_Dy', 'radar_Vx', 'radar_Vy',
-            'rtk_center_x', 'rtk_center_y', 'rtk_Vx', 'rtk_Vy',
-            'pos_error_x', 'pos_error_y', 'pos_error_abs',
-            'vel_error_x', 'vel_error_y', 'vel_error_abs',
-            'match_dist', 'is_matched',
-        ]
-        export_df = aligned_df[export_cols].copy()
-        # CSV 公式注入防护
-        for col in export_df.select_dtypes(include=['object']).columns:
-            export_df[col] = export_df[col].apply(_sanitize_csv_cell)
-        export_df.to_csv(filepath, index=False, encoding=encoding)
-        return f'CSV已导出: {os.path.basename(filepath)} ({len(export_df)}行)'
+        if aligned_df is None or len(aligned_df) == 0:
+            return '无对齐数据可导出'
+        parent_dir = os.path.dirname(os.path.abspath(filepath))
+        os.makedirs(parent_dir, exist_ok=True)
+        # 文件被 Excel 打开时会锁定（Errno 13），自动加时间戳后缀降级保存
+        target = filepath
+        try:
+            with open(target, 'a'):
+                pass
+        except PermissionError:
+            stem, ext = os.path.splitext(filepath)
+            target = f'{stem}_{pd.Timestamp.now().strftime("%H%M%S")}{ext}'
+
+        n, sheet_count = _write_workbook(
+            aligned_df, quantities, perf_results, target, rules=rules)
+        logger.info('导出真值对齐与性能验收工作簿: %s', target)
+        return (f'工作簿已导出: {os.path.basename(target)} '
+                f'({n}帧, 验收汇总+{sheet_count}个物理量sheet)')
     except Exception as e:
-        logger.exception('导出CSV失败')
+        logger.exception('导出工作簿失败')
         return f'导出失败: {e}'
 
 
-def export_summary_json(summary: dict, match_summary: dict, filepath: str) -> str:
-    """导出汇总统计JSON。
+_DETAIL_HEADERS = [
+    '雷达时间戳', '雷达数据', '真值时间戳', '真值数据', '时间差(ms)',
+    '真值距离', '绝对误差', '单帧阈值', '单帧判定', '三帧阈值',
+    '三帧归一化', '三帧违规', '距离段', '段RMSE', '段准确率',
+    '三帧参考线', '帧序号', '不合格误差', '三帧违规点']
+_BASIS_COL_DISTANCE = 'F'   # 真值距离列（percent_basis=distance 时阈值公式引用）
+_BASIS_COL_TRUTH = 'D'      # 真值数据列（percent_basis=truth 时阈值公式引用）
 
-    Args:
-        summary: 误差统计汇总。
-        match_summary: 匹配概况。
-        filepath: 导出文件路径。
 
-    Returns:
-        导出成功消息。
-    """
+def _py(value):
+    """numpy 标量转 Python 原生类型，避免 openpyxl 拒写 np.int64 等。"""
+    if value is None:
+        return None
+    if isinstance(value, (str, bool)):
+        return value
     try:
-        output = {
-            'match': match_summary,
-            'errors': summary,
-        }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
-        return f'JSON已导出: {os.path.basename(filepath)}'
-    except Exception as e:
-        logger.exception('导出JSON失败')
-        return f'导出失败: {e}'
+        if isinstance(value, (int,)):
+            return int(value)
+        fv = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return fv if np.isfinite(fv) else None
+
+
+def _fmt_epoch_ts(value) -> str:
+    """epoch 秒 → 无时区偏移字符串（与图表悬浮口径一致，1970 基准）。"""
+    try:
+        sec = float(value)
+    except (TypeError, ValueError):
+        return ''
+    if not np.isfinite(sec):
+        return ''
+    return pd.to_datetime(sec, unit='s').strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+
+
+def _limit_excel(limit_rule: dict, basis_col: str, row: int):
+    """限值规则 → Excel 活公式/常量（语义与 performance._resolve_limit 一致）。
+
+    percent 类公式直接引用基准列（真值距离 F 或真值数据 D），双击单元格
+    即可看到阈值的计算过程；无法解析的规则返回 None（回退静态值）。
+    """
+    if not isinstance(limit_rule, dict):
+        return None
+    mode = limit_rule.get('mode')
+    absolute = limit_rule.get('absolute')
+    percent = limit_rule.get('percent')
+    scale = limit_rule.get('scale')
+    basis = f'ABS({basis_col}{row})'
+    try:
+        if mode == 'absolute':
+            return float(absolute)
+        if mode == 'percent':
+            return f'={float(percent)}*{basis}'
+        if mode == 'max_absolute_percent':
+            return f'=MAX({float(absolute)},{float(percent)}*{basis})'
+        if mode == 'scaled_max_absolute_percent':
+            return (f'=ROUND({float(scale)}*MAX({float(absolute)},'
+                    f'{float(percent)}*{basis}),6)')
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def _describe_limit(limit_rule: dict) -> str:
+    """限值规则的人类可读描述（用于评判标准块）。"""
+    if not isinstance(limit_rule, dict):
+        return '未配置'
+    mode = limit_rule.get('mode')
+    absolute = limit_rule.get('absolute')
+    percent = limit_rule.get('percent')
+    scale = limit_rule.get('scale')
+    try:
+        if mode == 'absolute':
+            return f'固定 {float(absolute)}'
+        if mode == 'percent':
+            return f'{float(percent) * 100:g}% × 基准'
+        if mode == 'max_absolute_percent':
+            return f'max({float(absolute)}, {float(percent) * 100:g}% × 基准)'
+        if mode == 'scaled_max_absolute_percent':
+            return (f'{float(scale):g} × max({float(absolute)}, '
+                    f'{float(percent) * 100:g}% × 基准)')
+    except (TypeError, ValueError):
+        pass
+    return '未配置'
+
+
+def _criteria_lines(label: str, unit: str, rule: dict, perf_cfg: dict) -> list:
+    """页首评判标准块：判定公式语义 + 逐距离段阈值配置。"""
+    accuracy_req = float(perf_cfg.get('accuracy_requirement', 0.9545))
+    three_req = float(perf_cfg.get('three_frame_requirement', 1.0))
+    min_samples = int(perf_cfg.get('min_samples_for_conclusion', 3))
+    valid_range = perf_cfg.get('valid_distance_range') or [0, 150]
+    by_distance = str(rule.get('percent_basis', 'truth')) == 'distance'
+    basis_text = ('RTK 纵向距离（F 列，d=|rtk_center_x|）' if by_distance
+                  else '本物理量真值绝对值（D 列）')
+    lines = [
+        f'{label}（单位 {unit}）逐帧验收明细与判定',
+        f'百分比基准：{basis_text}',
+        '单帧合格：|雷达数据−真值数据| < 单帧阈值（G 列绝对误差、I 列判定均为 Excel 公式）',
+        f'准确率：段内合格帧数 ÷ 段样本数（O 列公式），须 > {accuracy_req * 100:.2f}%',
+        '三帧归一化（K 列）= |绝对误差| ÷ 三帧阈值，即单帧误差的超限倍数',
+        ('三帧违规（L 列）= 连续三帧归一化最小值 MIN(K前, K本, K后) ≥ 1，'
+         '即连续三帧全部超限才记违规，结果以中间帧归属输出一次；'
+         '数据首帧、中断后首帧、连续段末帧无完整三帧窗口，不输出'),
+        (f'结论：准确率 > {accuracy_req * 100:.2f}% 且 连续三帧指标 < {three_req:g}'
+         f' → 通过；样本 < {min_samples} → 样本不足'),
+        (f'有效帧：雷达-真值匹配成功、数值有限且真值距离在 '
+         f'{valid_range[0]}–{valid_range[1]}m 内；本表仅含有效帧'),
+    ]
+    for i, entry in enumerate(rule.get('bins') or []):
+        span = entry.get('range') or []
+        lo = span[0] if len(span) > 0 else '?'
+        hi = span[1] if len(span) > 1 else '?'
+        normal = _describe_limit(entry.get('normal_limit'))
+        three = _describe_limit(entry.get('three_frame_limit'))
+        lines.append(f'  距离段 [{lo}, {hi}]: 单帧阈值 = {normal}；三帧阈值 = {three}')
+    if not (rule.get('bins') or []):
+        lines.append(f'  单帧阈值 = {_describe_limit(rule.get("normal_limit"))}（完整曲线单限值）')
+    return lines
+
+
+def _sheet_safe_name(name: str, used: set) -> str:
+    """sheet 名安全化：替换非法字符、限长 31、去重。"""
+    clean = re.sub(r'[\[\]:*?/\\]', '_', str(name)).strip()[:31] or '物理量'
+    base, k = clean, 2
+    while clean in used:
+        suffix = f'_{k}'
+        clean = base[:31 - len(suffix)] + suffix
+        k += 1
+    used.add(clean)
+    return clean
+
+
+def _write_workbook(
+    aligned_df: pd.DataFrame,
+    quantities: dict,
+    perf_results: dict,
+    target,
+    rules: dict | None = None,
+) -> tuple[int, int]:
+    """写入工作簿到 target（文件路径或二进制缓冲区）。
+
+    每个物理量一个 sheet：页首为评判标准块（判定公式语义与逐段阈值配置），
+    明细表含雷达/真值时间戳与数据、活公式（绝对误差、单帧阈值、单帧判定、
+    三帧归一化、段RMSE、段准确率），不合格处红色字体；另有全局「验收汇总」
+    sheet（含准确率算式与通过条件列，不通过行红字）。
+    返回 (对齐帧数, 物理量 sheet 数)。
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    perf_cfg = rules if rules is not None else (get('performance_metrics', {}) or {})
+    all_rules = perf_cfg.get('metrics') or {}
+    accuracy_req = float(perf_cfg.get('accuracy_requirement', 0.9545))
+    three_req = float(perf_cfg.get('three_frame_requirement', 1.0))
+    condition_text = (f'准确率>{accuracy_req * 100:.2f}% 且 '
+                      f'连续三帧指标<{three_req:g}')
+    red_font = Font(color='FFDC2626', bold=True)
+
+    n = len(aligned_df)
+    base = aligned_df.reset_index(drop=True)
+    rtk_ts_all = base.get('rtk_nearest_ts_parsed')
+    time_diff_all = base.get('time_diff_ms')
+
+    wb = Workbook()
+    used_names = {'验收汇总'}
+
+    # ── 验收汇总（工作簿首位）──
+    ws_sum = wb.active
+    ws_sum.title = '验收汇总'
+    summary = _build_performance_summary_df(perf_results)
+    if summary.empty:
+        ws_sum.append(['无性能评估结果（执行对齐后可导出）'])
+    else:
+        acc_calc, cond = [], []
+        for _, row in summary.iterrows():
+            sc = int(row.get('sample_count') or 0)
+            pc = row.get('normal_pass_count')
+            acc = row.get('accuracy')
+            if sc > 0 and acc is not None:
+                # accuracy 已为百分数（如 66.67）
+                acc_calc.append(
+                    f'{int(pc) if pc is not None else 0}/{sc}×100%={acc:.2f}%')
+                cond.append(condition_text)
+            else:
+                acc_calc.append('—')
+                cond.append('—')
+        summary = summary.rename(columns=_SUMMARY_HEADER_ZH)
+        summary['准确率计算'] = acc_calc
+        summary['通过条件'] = cond
+        ws_sum.append(list(summary.columns))
+        for _, row in summary.iterrows():
+            ws_sum.append([_py(v) for v in row.tolist()])
+        ws_sum.freeze_panes = 'A2'
+        ws_sum.auto_filter.ref = ws_sum.dimensions
+        status_col = summary.columns.get_loc('结论')
+        for row in ws_sum.iter_rows(min_row=2):
+            if row[status_col].value == STATUS_FAIL:
+                for cell in row:
+                    cell.font = red_font
+        for col_idx, col_name in enumerate(summary.columns, start=1):
+            ws_sum.column_dimensions[get_column_letter(col_idx)].width = (
+                24 if col_name in ('准确率计算', '通过条件', '不通过原因')
+                else 12 if col_name in ('物理量', '结论', 'RMSE') else 13)
+
+
+    # ── 每物理量一个 sheet ──
+    for label, qty in (quantities or {}).items():
+        ws = wb.create_sheet(_sheet_safe_name(label, used_names))
+        rule = all_rules.get(label) or {}
+        unit = str(qty.get('unit') or rule.get('unit') or '')
+        perf_result = (perf_results or {}).get(label) or {}
+        frames = perf_result.get('frames')
+        basis_col = ('_BASIS_COL_DISTANCE'
+                     if str(rule.get('percent_basis', 'truth')) == 'distance'
+                     else '_BASIS_COL_TRUTH')
+        basis_col = _BASIS_COL_DISTANCE if (
+            str(rule.get('percent_basis', 'truth')) == 'distance'
+        ) else _BASIS_COL_TRUTH
+
+        for line in _criteria_lines(label, unit, rule, perf_cfg):
+            ws.append([line])
+        ws.append([None])  # 空行（append([]) 不占行，会导致行号错位）
+
+        if not isinstance(frames, pd.DataFrame) or len(frames) == 0:
+            ws.append(['无逐帧评估数据（执行对齐并产生有效样本后可导出）'])
+            continue
+
+        fr = frames.reset_index(drop=True)
+        bin_idx = pd.to_numeric(fr.get('distance_bin'), errors='coerce')
+        abs_err = pd.to_numeric(fr.get('abs_error'), errors='coerce').to_numpy(
+            dtype=float)
+        limits = pd.to_numeric(fr.get('normal_limit'), errors='coerce').to_numpy(
+            dtype=float)
+        three_limits = pd.to_numeric(
+            fr.get('three_frame_limit'), errors='coerce').to_numpy(dtype=float)
+        mask = np.isfinite(abs_err) & np.isfinite(limits)
+        is_binned = perf_result.get('mode') != 'single_limit'
+        if is_binned:
+            mask &= (bin_idx.fillna(-1).to_numpy(dtype=int) >= 0)
+        if not mask.any():
+            ws.append(['无有效匹配帧'])
+            continue
+
+        label_map, _rmse_map = _perf_bin_lookup_maps(perf_result)
+        rule_bins = rule.get('bins') or []
+        same_len = len(fr) == n
+        row_positions = np.flatnonzero(mask)
+        header_row = ws.max_row + 1
+        ws.append(_DETAIL_HEADERS)
+        first = header_row + 1
+        last = header_row + len(row_positions)
+        breaks_series = (
+            pd.to_numeric(fr.get('continuity_break'), errors='coerce').fillna(0)
+            .to_numpy(dtype=int) if 'continuity_break' in fr else None)
+
+        prev_bi = None
+        for offset, i in enumerate(row_positions):
+            r = first + offset
+            bi = int(bin_idx.iloc[i]) if pd.notna(bin_idx.iloc[i]) else -1
+            limit_rule = (rule_bins[bi].get('normal_limit')
+                          if is_binned and 0 <= bi < len(rule_bins) else None)
+            threshold = _limit_excel(limit_rule, basis_col, r)
+            if threshold is None:
+                threshold = _py(limits[i])
+            violation = bool(fr['three_frame_violation'].iloc[i]) \
+                if 'three_frame_violation' in fr else False
+            normal_pass = bool(fr['normal_pass'].iloc[i]) \
+                if 'normal_pass' in fr else True
+            is_break = bool(breaks_series[i]) if breaks_series is not None else False
+            if is_binned:
+                dist_label = label_map.get(bi)
+            else:
+                dist_label = label_map.get(-1, '完整曲线')
+            rtk_ts = (_fmt_epoch_ts(rtk_ts_all.iloc[i])
+                      if rtk_ts_all is not None and same_len else '')
+            time_diff = (_py(time_diff_all.iloc[i])
+                         if time_diff_all is not None and same_len else None)
+
+            # ── 三帧违规（Excel 活公式，binned 模式）──
+            # 违规 = 连续三帧归一化最小值 MIN(K前, K本, K后) ≥ 1，内联公式，
+            # 以中间帧归属输出一次：
+            #   段末帧（下一行中断或最后一行）：无完整三帧窗口 → 空
+            #   连续段首帧（数据首行或中断后首帧）：无前帧 → 空
+            #   其余：MIN(K-1, K, K+1)
+            if is_binned:
+                next_is_break = (
+                    breaks_series is not None
+                    and offset + 1 < len(row_positions)
+                    and bool(breaks_series[row_positions[offset + 1]]))
+                is_seg_tail = (r == last) or next_is_break
+                is_seg_head = (r == first) or is_break
+                if is_seg_tail or is_seg_head:
+                    violation_formula = None
+                else:
+                    violation_formula = (
+                        f'=IF(MIN(K{r - 1},K{r},K{r + 1})>=1,"违规","")')
+            else:
+                violation_formula = None
+
+            # ── 段RMSE：每段只在首行输出一个公式，其余行留空 ──
+            is_bin_head = (offset == 0) or is_break or (bi != prev_bi)
+            rmse_formula = None
+            if is_binned and is_bin_head:
+                rmse_formula = (
+                    f'=SQRT(SUMPRODUCT(($M${first}:$M${last}=M{r})'
+                    f'*($G${first}:$G${last})^2)/COUNTIF($M${first}:$M${last},M{r}))')
+
+            ws.append([
+                str(fr['timestamp'].iloc[i]) if 'timestamp' in fr else '',
+                _py(fr['radar_value'].iloc[i]),
+                rtk_ts,
+                _py(fr['truth_value'].iloc[i]),
+                time_diff,
+                _py(fr['truth_distance'].iloc[i]),
+                f'=ABS(B{r}-D{r})',
+                threshold,
+                f'=IF(G{r}<H{r},"✓","✗")',
+                _py(fr['three_frame_limit'].iloc[i]),
+                f'=IF(J{r}=0,"",G{r}/J{r})',
+                violation_formula,
+                dist_label,
+                rmse_formula,
+                (f'=COUNTIFS($M${first}:$M${last},M{r},'
+                 f'$I${first}:$I${last},"✓")/COUNTIF($M${first}:$M${last},M{r})'),
+            ])
+            # 不合格帧：误差/阈值/判定三格红字；违规帧：三帧违规格红字
+            # （按后端判定结果，公式列保存后读不到计算值，无法事后判断）
+            if not normal_pass:
+                for col in (7, 8, 9):
+                    ws.cell(row=r, column=col).font = red_font
+            if violation:
+                ws.cell(row=r, column=12).font = red_font
+            prev_bi = bi
+
+        ws.freeze_panes = f'A{first}'
+        ws.auto_filter.ref = f'A{header_row}:O{last}'
+        for r in range(first, last + 1):
+            ws.cell(row=r, column=15).number_format = '0.00%'
+        widths = [22, 12, 22, 12, 10, 10, 10, 12, 9, 10, 11, 9, 12, 12, 10]
+        for col_idx, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    wb.save(target)
+    return n, max(len(quantities or {}), 0)
+
+
+def export_comparison_workbook_bytes(
+        aligned_df: pd.DataFrame,
+        quantities: dict,
+        perf_results: dict,
+        rules: dict | None = None,
+) -> bytes:
+    """在内存中生成工作簿，返回 xlsx 二进制内容（供浏览器下载）。"""
+    import io
+
+    buf = io.BytesIO()
+    _write_workbook(aligned_df, quantities, perf_results, buf, rules=rules)
+    return buf.getvalue()
+

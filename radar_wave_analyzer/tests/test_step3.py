@@ -1,15 +1,12 @@
 """
-第三步功能测试：flask-caching 服务端缓存、plotly-resampler 降采样、图片导出。
+第三步功能测试：flask-caching 服务端缓存、plotly-resampler 降采样。
 
 注意：
 - flask-caching 的 cache 操作需要 Flask app context
 - FigureResampler 构造需要 Dash app 上下文（注册重采样回调）
 """
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import warnings
+
 warnings.filterwarnings('ignore')
 
 import pandas as pd
@@ -17,7 +14,8 @@ import numpy as np
 import pytest
 
 # 导入 app（会触发 cache.init_app 和回调注册）
-import app as app_module
+from radar_wave_analyzer import app as app_module
+
 _app = app_module.app
 
 
@@ -38,7 +36,7 @@ class TestCacheModule:
 
     def test_set_and_get_df(self, app_ctx):
         """set_data_cache 后能正确取回 df。"""
-        from cache import set_data_cache, get_df, clear_data_cache
+        from radar_wave_analyzer.cache import set_data_cache, get_df, clear_data_cache
         clear_data_cache()
         df = pd.DataFrame({'a': [1, 2, 3]})
         meta = pd.DataFrame({'trajectory_id': ['t1']})
@@ -49,7 +47,7 @@ class TestCacheModule:
 
     def test_get_segment(self, app_ctx):
         """单轨迹段能独立缓存与取回。"""
-        from cache import set_data_cache, get_segment, clear_data_cache
+        from radar_wave_analyzer.cache import set_data_cache, get_segment, clear_data_cache
         clear_data_cache()
         df = pd.DataFrame({'a': [1, 2, 3]})
         seg1 = pd.DataFrame({'x': [10, 20]})
@@ -62,7 +60,7 @@ class TestCacheModule:
 
     def test_compact_segment_indices_restore_rows_from_canonical_df(self, app_ctx):
         """上传路径只缓存源行号，读取轨迹时仍应恢复正确顺序的数据。"""
-        from cache import set_data_cache, get_segment, clear_data_cache
+        from radar_wave_analyzer.cache import set_data_cache, get_segment, clear_data_cache
         clear_data_cache()
         df = pd.DataFrame({'x': [10, 20, 30]})
         segment = pd.DataFrame({
@@ -76,8 +74,8 @@ class TestCacheModule:
 
     def test_clear_cache(self, app_ctx):
         """clear_data_cache 清空所有条目。"""
-        from cache import (set_data_cache, get_df, get_segment, clear_data_cache,
-                           has_data_loaded)
+        from radar_wave_analyzer.cache import (set_data_cache, get_df, get_segment,
+                                               clear_data_cache, has_data_loaded)
         clear_data_cache()
         df = pd.DataFrame({'a': [1]})
         set_data_cache('test.csv', 'front', df, pd.DataFrame(), {'t1': df})
@@ -89,7 +87,7 @@ class TestCacheModule:
 
     def test_radar_position(self, app_ctx):
         """雷达位置标识缓存。"""
-        from cache import set_data_cache, get_radar_position, clear_data_cache
+        from radar_wave_analyzer.cache import set_data_cache, get_radar_position, clear_data_cache
         clear_data_cache()
         set_data_cache('test.csv', 'rear_corner', pd.DataFrame(), pd.DataFrame(), {})
         assert get_radar_position() == 'rear_corner'
@@ -97,7 +95,7 @@ class TestCacheModule:
     def test_request_sessions_do_not_share_cached_data(self, app_ctx):
         """不同 Flask session 的缓存数据必须完全隔离。"""
         from flask import session
-        from cache import clear_data_cache, get_df, set_data_cache
+        from radar_wave_analyzer.cache import clear_data_cache, get_df, set_data_cache
 
         with _app.server.test_request_context('/'):
             clear_data_cache()
@@ -123,9 +121,65 @@ class TestCacheModule:
 class TestResampler:
     """测试 graph_builder 的降采样包装。"""
 
+    def test_curve_uses_one_hoverable_trace_per_panel(self, app_ctx):
+        """曲线自身负责悬停，不复制透明 marker 几何层。"""
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
+
+        timestamps = pd.date_range('2026-01-01', periods=20, freq='50ms')
+        values = np.linspace(0.0, 0.19, 20)
+        df = pd.DataFrame({'timestamp_parsed': timestamps, 'Dx': values})
+
+        fig = build_multi_subplot_graph(df, ['Dx'], 't1', use_resampler=False)
+        visible_trace = fig.data[0]
+
+        assert len(fig.data) == 1
+        assert visible_trace.mode == 'lines'
+        assert visible_trace.line.color == '#1565C0'
+        assert visible_trace.line.width == 2
+        assert 'Dx:' in visible_trace.hovertemplate
+        assert list(visible_trace.x) == list(timestamps)
+        assert list(visible_trace.y) == list(values)
+
+    def test_subplots_keep_visible_bottom_time_axis(self, app_ctx):
+        """多面板保留 Plotly 原生共享轴，确保底部时间刻度可见。"""
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
+
+        n = 800
+        df = pd.DataFrame({
+            'timestamp_parsed': pd.date_range('2026-01-01', periods=n, freq='50ms'),
+            'Dx': np.sin(np.linspace(0, 8, n)),
+            'Dy': np.cos(np.linspace(0, 8, n)),
+        })
+
+        fig = build_multi_subplot_graph(df, ['Dx', 'Dy'], 't1', use_resampler=False)
+
+        assert len(fig.data) == 2
+        assert {trace.xaxis for trace in fig.data} == {'x', 'x2'}
+        assert fig.layout.xaxis.visible is False
+        assert fig.layout.xaxis.matches == 'x2'
+        assert fig.layout.xaxis2.visible is not False
+        assert fig.layout.xaxis2.showticklabels is not False
+        assert fig.layout.xaxis2.title.text == '时间'
+
+    def test_max_jump_remains_a_single_red_line(self, app_ctx):
+        """最大跳变继续使用醒目的红色线段，不增加红色点 trace。"""
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
+
+        df = pd.DataFrame({
+            'timestamp_parsed': pd.date_range('2026-01-01', periods=5, freq='50ms'),
+            'Dx': [0.0, 0.1, 5.0, 5.1, 5.2],
+        })
+
+        fig = build_multi_subplot_graph(df, ['Dx'], 't1', use_resampler=False)
+        red_shapes = [shape for shape in fig.layout.shapes if shape.line.color == '#dc2626']
+
+        assert len(red_shapes) == 1
+        assert red_shapes[0].type == 'line'
+        assert all(trace.marker.color != '#dc2626' for trace in fig.data)
+
     def test_small_data_no_resampler(self, app_ctx):
         """小数据集不启用降采样，返回普通 Figure。"""
-        from components.graph_builder import build_multi_subplot_graph
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
         df = pd.DataFrame({
             'timestamp_parsed': pd.date_range('2026-01-01', periods=10, freq='50ms'),
             'Dx': np.arange(10, dtype=float),
@@ -135,8 +189,8 @@ class TestResampler:
 
     def test_large_data_wrapped(self, app_ctx):
         """大数据集遵循当前降采样配置；禁用时保留普通 Figure。"""
-        from components.graph_builder import build_multi_subplot_graph
-        from config import get
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
+        from radar_wave_analyzer.config import get
         n = 6000  # 超过默认阈值 5000
         df = pd.DataFrame({
             'timestamp_parsed': pd.date_range('2026-01-01', periods=n, freq='50ms'),
@@ -151,8 +205,8 @@ class TestResampler:
 
     def test_large_data_display_payload_is_bounded(self, app_ctx):
         """静态显示降采样限制浏览器点数，同时保留首尾时间边界。"""
-        from components.graph_builder import build_multi_subplot_graph
-        from config import get
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
+        from radar_wave_analyzer.config import get
         n = 10_000
         timestamps = pd.date_range('2026-01-01', periods=n, freq='50ms')
         values = np.sin(np.linspace(0, 30, n))
@@ -168,7 +222,7 @@ class TestResampler:
 
     def test_export_bypass_resampler(self, app_ctx):
         """use_resampler=False 时导出图不包装降采样。"""
-        from components.graph_builder import build_multi_subplot_graph
+        from radar_wave_analyzer.components.graph_builder import build_multi_subplot_graph
         n = 6000
         df = pd.DataFrame({
             'timestamp_parsed': pd.date_range('2026-01-01', periods=n, freq='50ms'),
@@ -176,35 +230,3 @@ class TestResampler:
         })
         fig = build_multi_subplot_graph(df, ['Dx'], 't1', use_resampler=False)
         assert type(fig).__name__ != 'FigureResampler'
-
-
-# ============================================================
-# 图片导出测试
-# ============================================================
-class TestImageExport:
-    """测试 exporter 的图片导出功能。"""
-
-    def test_export_png(self, tmp_path):
-        """导出 PNG 图片。"""
-        from core.exporter import export_graph_image
-        seg_df = pd.DataFrame({
-            'timestamp_parsed': pd.date_range('2026-01-01', periods=10, freq='50ms'),
-            'Dx': np.arange(10, dtype=float),
-        })
-        filepath = export_graph_image(
-            seg_df, ['Dx'], 't1', 40, 480,
-            '2026_06_23_17_16_20_276', '2026_06_23_17_16_44_326', str(tmp_path),
-        )
-        assert os.path.exists(filepath)
-        assert filepath.endswith('.png')
-        assert '40_2026_06_23_17_16_20_276_2026_06_23_17_16_44_326_480' in filepath
-
-    def test_export_failure_raises(self, tmp_path):
-        """导出失败时抛出 ValueError（物理量列表为空）。"""
-        from core.exporter import export_graph_image
-        seg_df = pd.DataFrame({'timestamp_parsed': [], 'Dx': []})
-        with pytest.raises(ValueError, match='quantities_list 不能为空'):
-            export_graph_image(
-                seg_df, [], 't1', 40, 480,
-                '2026_06_23_17_16_20_276', '2026_06_23_17_16_44_326', str(tmp_path),
-            )

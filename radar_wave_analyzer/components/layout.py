@@ -1,28 +1,23 @@
-"""
-布局构建模块。
-结构：顶部栏 + 左侧控制面板 | 中间图表区（物理量多选+子图） | 右侧统计面板
+"""布局入口：全局状态存储 + 模式切换 Tab + 波动/对比两页面板装配。
 
-目标界面：
-- 顶部栏：雷达切换按钮组 + 状态标签
-- 左侧（3/12）：时间筛选卡 / 目标ID列表 / 轨迹段卡
-- 中间（6/12）：
-    - 左窄栏（2/12）：物理量多选 Checklist
-    - 右宽栏（10/12）：纵向堆叠子图（共享X轴）+ 提示
-- 右侧（3/12）：全段统计卡 + 选中区域统计卡 + 导出卡
+各页面板的内部结构见 layout_wave.py 与 layout_comparison.py。
 """
 from dash import dcc, html
 import dash_bootstrap_components as dbc
 
-try:
-    from ..config import get
-except ImportError:
-    from config import get
+from ..config import get
+from .layout_comparison import (
+    build_cmp_center_panel,
+    build_cmp_left_panel,
+    build_cmp_right_panel,
+)
+from .layout_wave import build_center_panel, build_left_panel, build_right_panel
 
 
 # ===================== 顶部栏 =====================
 
-def _build_top_bar() -> html.Div:
-    """顶部栏：产品标识、雷达切换和当前数据源状态。"""
+def _build_radar_selector_controls() -> html.Div:
+    """模式栏中的紧凑雷达切换控件；无多雷达配置时保持隐藏。"""
     radar_sources = get('radar_sources', {})
     radar_options = [
         {'label': cfg['label'], 'value': key}
@@ -33,205 +28,17 @@ def _build_top_bar() -> html.Div:
     selector_options = radar_options or [{'label': '', 'value': 'default'}]
 
     return html.Div([
-        html.Div([
-            html.Div('RADAR LAB', className='top-bar-eyebrow'),
-            html.Div('雷达轨迹分析', className='top-bar-title'),
-            html.Div('波动诊断与真值评估工作台', className='top-bar-subtitle'),
-        ], className='top-bar-brand'),
-        html.Div([
-            dbc.RadioItems(
-                id='radar-selector',
-                options=selector_options,
-                value=default_radar,
-                inline=True,
-                className='radar-btn-group',
-                style={} if radar_options else {'display': 'none'},
-            ),
-            html.Span(
-                id='radar-position-label',
-                className='top-bar-tag',
-                style={} if radar_options else {'display': 'none'},
-            ),
-            html.Span('本地模式', className='system-status-tag'),
-        ], className='top-bar-controls'),
-    ], className='top-bar')
-
-
-# ===================== 左侧面板 =====================
-
-def _build_time_filter_card() -> html.Div:
-    """时间筛选卡。"""
-    return html.Div([
-        html.Div('时间筛选', className='app-card-title'),
-        dcc.Loading(
-            id='loading-upload',
-            type='circle',
-            color='#3b82f6',
-            children=html.Div([
-                dcc.Upload(
-                    id='upload-csv',
-                    accept='.csv',
-                    multiple=True,
-                    max_size=500 * 1024 * 1024,  # 500MB
-                    children=html.Div(
-                        [
-                            html.Div('⬆', className='upload-zone-icon'),
-                            html.Div('拖拽CSV文件到此处 或 点击选择', className='upload-zone-text'),
-                            html.Div('支持多文件同时拖入 (.csv)', className='upload-zone-hint'),
-                        ],
-                        className='upload-zone-inner',
-                    ),
-                    className='upload-zone',
-                ),
-                html.Div(id='upload-feedback', className='feedback-muted mt-1'),
-            ]),
+        dbc.RadioItems(
+            id='radar-selector',
+            options=selector_options,
+            value=default_radar,
+            inline=True,
+            className='radar-btn-group',
         ),
-        html.Label('定位时间', className='field-label'),
-        dcc.Input(
-            id='timestamp-input',
-            type='text',
-            placeholder='YYYY-MM-DD HH:MM:SS',
-            className='form-control form-control-sm',
-            debounce=True,
-        ),
-        html.Button('一键清除', id='wave-clear-btn', n_clicks=0,
-                    className='danger-text-btn'),
-        html.Div(id='timestamp-feedback', className='feedback-muted mt-2'),
-    ], className='app-card')
+        html.Span(id='radar-position-label', className='mode-radar-tag'),
+    ], className='mode-radar-controls',
+       style={} if radar_options else {'display': 'none'})
 
-
-def _build_id_list_card() -> html.Div:
-    """目标 ID 列表卡。"""
-    return html.Div([
-        html.Div([
-            html.Span('目标 ID', className='fw-bold'),
-            html.Span(id='id-count-badge', className='badge', children=''),
-        ], className='app-card-title'),
-        html.Div(id='id-list-container', className='id-list', children=[
-            html.Div('输入时间戳后显示目标', className='id-list-item',
-                     style={'cursor': 'default', 'color': '#94a3b8'}),
-        ]),
-    ], className='app-card')
-
-
-def _build_trajectory_card() -> html.Div:
-    """轨迹段卡。"""
-    return html.Div([
-        html.Div([
-            html.Span('轨迹段', className='fw-bold'),
-            html.Span(id='traj-id-badge', className='badge', children=''),
-        ], className='app-card-title'),
-        html.Div(id='trajectory-table'),
-    ], className='app-card')
-
-
-def _build_left_panel() -> dbc.Col:
-    """左侧控制面板。"""
-    return dbc.Col([
-        _build_time_filter_card(),
-        _build_id_list_card(),
-        _build_trajectory_card(),
-    ], width=2, className='side-panel left-panel')
-
-
-# ===================== 中间面板 =====================
-
-def _build_quantity_checklist() -> html.Div:
-    """物理量多选列表。"""
-    quantities = get('quantities', {})
-    default_qty = get('DEFAULT_QUANTITY', 'Dx')
-
-    options = [
-        {'label': info['label'], 'value': qty}
-        for qty, info in quantities.items()
-    ]
-
-    return html.Div([
-        html.Div('物理量', className='app-card-title'),
-        dcc.Checklist(
-            id='quantity-checklist',
-            options=options,
-            value=[default_qty],
-            className='qty-checklist',
-            labelClassName='qty-checklist-label',
-        ),
-    ], className='app-card qty-panel')
-
-
-def _build_center_panel() -> dbc.Col:
-    """中间图表区：顶部指标工具栏 + 主图表。"""
-    return dbc.Col([
-        _build_quantity_checklist(),
-        html.Div([
-            html.Div(
-                id='graph-title-bar',
-                className='graph-title-bar',
-                children=[html.Span('请先拖入数据并选择轨迹', className='feedback-muted')],
-            ),
-            dcc.Loading(
-                id='loading-graph', type='circle', color='#3b82f6',
-                parent_className='loading-graph-inner',
-                children=dcc.Graph(
-                    id='trajectory-graph',
-                    config={
-                        'displayModeBar': True, 'displaylogo': False,
-                        'modeBarButtons': [
-                            ['select2d', 'pan2d'],
-                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
-                        ],
-                        'responsive': True, 'scrollZoom': True,
-                        'doubleClick': 'reset+autosize',
-                    },
-                    style={'width': '100%', 'height': '100%'},
-                ),
-            ),
-            html.Button('✕ 清除框选', id='clear-box-btn', n_clicks=0, className='clear-box-btn'),
-            html.Span(id='box-select-feedback', className='box-select-feedback'),
-        ], className='center-graph-wrapper'),
-
-        html.Div(id='current-trajectory-label', style={'display': 'none'}),
-        html.Div(id='graph-resize-trigger', style={'display': 'none'}),
-    ], width=7, className='center-panel')
-
-
-# ===================== 右侧面板 =====================
-
-def _build_right_panel() -> dbc.Col:
-    """右侧统计面板。"""
-    return dbc.Col([
-        # 全段统计
-        dcc.Loading(
-            id='loading-stats-full',
-            type='circle',
-            color='#3b82f6',
-            children=html.Div([
-                html.Div('全段统计', className='stats-card-title'),
-                html.Div('请导入数据并选择轨迹段', className='stats-empty'),
-            ], id='stats-full-content', className='stats-card'),
-        ),
-
-        # 选中区域统计
-        dcc.Loading(
-            id='loading-stats-box',
-            type='circle',
-            color='#3b82f6',
-            children=html.Div([
-                html.Div('选中区域统计', className='stats-card-title'),
-                html.Div('框选曲线区间后显示', className='stats-empty'),
-            ], id='stats-box-content', className='stats-card'),
-        ),
-
-        # 导出卡
-        html.Div([
-            html.Div('导出', className='app-card-title'),
-            html.Button('导出 CSV', id='export-csv-btn', n_clicks=0, className='export-btn'),
-            html.Button('导出图片', id='export-img-btn', n_clicks=0, className='export-btn'),
-            html.Div(id='export-feedback', className='feedback-muted mt-2'),
-        ], className='export-card'),
-    ], width=3, className='side-panel right-panel')
-
-
-# ===================== 模式切换 Tab =====================
 
 def _build_mode_tabs() -> html.Div:
     """模式切换 Tab 栏。"""
@@ -241,181 +48,20 @@ def _build_mode_tabs() -> html.Div:
             html.Button('真值对比', id='mode-tab-compare', className='mode-tab'),
         ], className='mode-tab-buttons'),
         html.Div('导入数据  ·  选择目标  ·  分析诊断  ·  导出结果', className='workflow-hint'),
+        _build_radar_selector_controls(),
     ], className='mode-tabs')
-
-
-# ===================== 真值对比 — 左侧面板 =====================
-
-def _build_cmp_left_panel() -> dbc.Col:
-    """左侧面板：上传卡 + 预览卡 + 对齐配置卡。"""
-    return dbc.Col([
-        # 卡片1：文件上传（双Upload方案，雷达/RTK各一个独立上传区）
-        html.Div([
-            html.Div('数据文件', className='app-card-title'),
-            # 雷达文件上传（包装容器，模式切换时由回调强制刷新以修复WebView2事件丢失）
-            html.Div('雷达CSV', style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px', 'marginTop': '8px'}),
-            html.Div(id='cmp-upload-radar-container', children=[
-                dcc.Upload(
-                    id='cmp-upload-radar',
-                    accept='.csv', multiple=True, max_size=500 * 1024 * 1024,  # 500MB
-                    children=html.Div([
-                        html.Div('⬆', className='upload-zone-icon'),
-                        html.Div('拖拽雷达CSV文件到此处（支持多选）', className='upload-zone-text'),
-                        html.Div('需含 Dx/Dy 列 (.csv)', className='upload-zone-hint'),
-                    ], className='upload-zone-inner'),
-                    className='upload-zone',
-                    style={'minHeight': '80px', 'padding': '10px'},
-                ),
-            ]),
-            html.Div(id='cmp-upload-radar-feedback', className='feedback-muted mt-1'),
-            # RTK文件上传（包装容器，模式切换时由回调强制刷新以修复WebView2事件丢失）
-            html.Div('RTK真值CSV', style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px', 'marginTop': '12px'}),
-            html.Div(id='cmp-upload-rtk-container', children=[
-                dcc.Upload(
-                    id='cmp-upload-rtk',
-                    accept='.csv', multiple=True, max_size=500 * 1024 * 1024,  # 500MB
-                    children=html.Div([
-                        html.Div('⬆', className='upload-zone-icon'),
-                        html.Div('拖拽RTK真值CSV到此处（支持多选）', className='upload-zone-text'),
-                        html.Div('需含 center_x/center_y 列 (.csv)', className='upload-zone-hint'),
-                    ], className='upload-zone-inner'),
-                    className='upload-zone',
-                    style={'minHeight': '80px', 'padding': '10px'},
-                ),
-            ]),
-            html.Div(id='cmp-upload-rtk-feedback', className='feedback-muted mt-1'),
-            html.Button('一键清除', id='cmp-clear-btn', n_clicks=0,
-                        className='danger-text-btn'),
-        ], className='app-card'),
-
-        # 卡片2：数据预览
-        html.Div(id='cmp-preview-card', className='app-card', children=[
-            html.Div('数据预览', className='app-card-title'),
-            html.Div('请先上传两个CSV文件', className='stats-empty'),
-        ]),
-
-        # 卡片3：对齐配置（Loading包裹，上传/ID切换时显示加载动画）
-        dcc.Loading(
-            id='cmp-loading-config', type='circle', color='#3b82f6',
-            children=html.Div(id='cmp-config-card', className='app-card', children=[
-                html.Div('对齐配置', className='app-card-title'),
-                html.Div([
-                    html.Div('目标ID', style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px'}),
-                    html.Div(id='cmp-id-list', className='id-list', children=[
-                        html.Div('上传后自动发现', className='id-list-item',
-                                 style={'cursor': 'default', 'color': '#94a3b8'}),
-                    ]),
-                    html.Div('时间延迟', style={
-                        'fontSize': '12px', 'color': '#64748b',
-                        'marginTop': '8px', 'marginBottom': '4px',
-                    }),
-                    dcc.Input(
-                        id='cmp-delay-input', type='number', value=0,
-                        min=-200, max=200, step=1,
-                        className='form-control form-control-sm',
-                        style={'width': '100px', 'display': 'inline-block'},
-                    ),
-                    html.Span(' ms', style={'fontSize': '12px', 'color': '#94a3b8', 'marginLeft': '4px'}),
-                    html.Div(id='cmp-delay-feedback', className='feedback-muted mt-1'),
-                    html.Div(id='cmp-coord-diag', className='feedback-muted mt-1'),
-                    html.Button('执行对齐', id='cmp-run-btn', n_clicks=0,
-                                className='export-btn', style={'marginTop': '12px'}),
-                    html.Div(id='cmp-run-feedback', className='feedback-muted mt-1'),
-                ]),
-            ]),
-        ),
-    ], width=2, className='side-panel left-panel')
-
-
-# ===================== 真值对比 — 中间面板 =====================
-
-def _build_cmp_center_panel() -> dbc.Col:
-    """中间面板：对比指标多选 + 图表。"""
-    cmp_config = get('comparison', {})
-    cmp_qties = cmp_config.get('quantities', {})
-    default_qties = cmp_config.get('default_quantities', ['pos_error_abs'])
-
-    options = [
-        {'label': info['label'], 'value': qty}
-        for qty, info in cmp_qties.items()
-    ]
-
-    return dbc.Col([
-        html.Div([
-            html.Div('对比指标', className='app-card-title'),
-            dcc.Checklist(
-                id='cmp-quantity-checklist', options=options, value=default_qties,
-                className='qty-checklist', labelClassName='qty-checklist-label',
-            ),
-        ], className='app-card qty-panel'),
-        html.Div([
-            html.Div(
-                id='cmp-graph-title', className='graph-title-bar',
-                children=[html.Span('请上传雷达与RTK数据并执行对齐', className='feedback-muted')],
-            ),
-            dcc.Loading(
-                id='cmp-loading-graph', type='circle', color='#3b82f6',
-                parent_className='loading-graph-inner',
-                children=dcc.Graph(
-                    id='cmp-graph',
-                    config={
-                        'displayModeBar': True, 'displaylogo': False,
-                        'modeBarButtons': [
-                            ['pan2d'],
-                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
-                        ],
-                        'responsive': True, 'scrollZoom': True,
-                        'doubleClick': 'reset+autosize',
-                    },
-                    style={'width': '100%', 'height': '100%'},
-                ),
-            ),
-        ], className='center-graph-wrapper'),
-    ], width=7, className='center-panel')
-
-
-# ===================== 真值对比 — 右侧面板 =====================
-
-def _build_cmp_right_panel() -> dbc.Col:
-    """右侧面板：误差统计 + 距离区间表 + 导出。"""
-    return dbc.Col([
-        dcc.Loading(
-            id='cmp-loading-stats', type='circle', color='#3b82f6',
-            children=html.Div([
-                html.Div('误差统计', className='stats-card-title'),
-                html.Div('执行对齐后显示', className='stats-empty'),
-            ], id='cmp-stats-content', className='stats-card'),
-        ),
-        dcc.Loading(
-            id='cmp-loading-bins', type='circle', color='#3b82f6',
-            children=html.Div([
-                html.Div('分距离区间统计', className='stats-card-title'),
-                html.Div('执行对齐后显示', className='stats-empty'),
-            ], id='cmp-bins-content', className='stats-card'),
-        ),
-        html.Div([
-            html.Div('导出', className='app-card-title'),
-            html.Button('导出 CSV', id='cmp-export-csv-btn', n_clicks=0,
-                        className='export-btn'),
-            html.Button('导出图表', id='cmp-export-img-btn', n_clicks=0,
-                        className='export-btn'),
-            html.Div(id='cmp-export-feedback', className='feedback-muted mt-2'),
-        ], className='export-card'),
-    ], width=3, className='side-panel right-panel')
 
 
 # ===================== 总布局 =====================
 
 def build_layout() -> html.Div:
     """构建完整布局。"""
-    default_qty = get('DEFAULT_QUANTITY', 'Dx')
-
     return html.Div([
         # 状态存储
         dcc.Store(id='store-data-loaded', data=False),
         dcc.Store(id='store-segments-meta', data=None),
         dcc.Store(id='store-selected-trajectory', data=None),
-        dcc.Store(id='store-selected-quantities', data=[default_qty]),
+        dcc.Store(id='store-selected-quantities', data=[]),
         dcc.Store(id='store-box-selection', data=None),
         dcc.Store(id='store-selected-id', data=None),
         html.Div(id='scroll-anchor', style={'display': 'none'}),
@@ -427,9 +73,13 @@ def build_layout() -> html.Div:
             'delay_ms': 0,
             'alignment_done': False,
         }),
-
-        # 顶部栏
-        _build_top_bar(),
+        dcc.Store(id='cmp-mappings', data={'signature': '', 'items': []}),
+        # 勾选的中断段（供「对齐所选段」合并对齐）。
+        dcc.Store(id='cmp-selected-segments', data={'segments': []}),
+        # 手动插入的分距离性能摘要快照；仅在点击“插入当前”时更新。
+        dcc.Store(id='perf-summary-snapshots', data={'source_key': '', 'items': []}),
+        # 手动插入的波动分析摘要快照；仅在点击“插入当前”时更新。
+        dcc.Store(id='wave-summary-snapshots', data={'items': []}),
 
         # 模式切换 Tab
         _build_mode_tabs(),
@@ -437,11 +87,11 @@ def build_layout() -> html.Div:
         html.Div([
             # 隐藏面板保持 DOM 活跃，修复 WebView2 中 Upload 事件丢失。
             html.Div([
-                dbc.Row([_build_left_panel(), _build_center_panel(), _build_right_panel()], className='g-0'),
+                dbc.Row([build_left_panel(), build_center_panel(), build_right_panel()], className='g-0'),
             ], id='panel-wave', className='analysis-panel',
                style={'position': 'relative', 'visibility': 'visible', 'pointer-events': 'auto'}),
             html.Div([
-                dbc.Row([_build_cmp_left_panel(), _build_cmp_center_panel(), _build_cmp_right_panel()], className='g-0'),
+                dbc.Row([build_cmp_left_panel(), build_cmp_center_panel(), build_cmp_right_panel()], className='g-0'),
             ], id='panel-compare', className='analysis-panel', style={
                 'position': 'absolute', 'visibility': 'hidden', 'pointer-events': 'none',
                 'width': '100%', 'top': 0, 'left': 0,

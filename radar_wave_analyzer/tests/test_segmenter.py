@@ -2,20 +2,15 @@
 segmenter 模块单元测试。
 覆盖开发规则中列出的全部必须测试用例。
 """
-import sys
-import os
-# 将 radar_wave_analyzer 目录加入 sys.path，使得 core 和 config 可以被直接导入
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import numpy as np
 import pandas as pd
 import pytest
-import core.segmenter as seg_mod
-from core.segmenter import (
+import radar_wave_analyzer.core.segmenter as seg_mod
+from radar_wave_analyzer.core.segmenter import (
     segment_trajectories, get_segment_ids_by_time, _detect_breakpoints,
-    _detect_lifecycle_breaks, _segment_max_speed,
+    _detect_lifecycle_breaks, _segment_spatial_extremes,
 )
-from core.data_loader import parse_timestamp
+from radar_wave_analyzer.core.data_loader import parse_timestamp
 
 
 def _make_test_df(records: list[dict]) -> pd.DataFrame:
@@ -336,15 +331,72 @@ class TestSegmenter:
         meta, segs = segment_trajectories(df)
         assert bool(meta.iloc[0]['spatial_anomaly']) is False
 
-    def test_segment_max_speed_unit(self):
-        """_segment_max_speed 直接验证帧间速度计算。"""
+    def test_same_timestamp_position_jump_has_distinct_conflict_marker(self):
+        """同时间戳位置突变应单独标记，不混入普通空间跳变。"""
+        df = _make_test_df([
+            {'timestamp': '2026-04-20 10:00:00.000', 'ID': 5, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 2.0},
+            {'timestamp': '2026-04-20 10:00:00.000', 'ID': 5, 'Track_Age': 2, 'Dx': 16.0, 'Dy': 2.0},
+        ])
+        meta, _ = segment_trajectories(df)
+        assert bool(meta.iloc[0]['timestamp_position_conflict']) is True
+        assert bool(meta.iloc[0]['spatial_anomaly']) is False
+
+    def test_segment_spatial_extremes_unit(self):
+        """_segment_spatial_extremes 直接验证帧间位移与速度计算。"""
         df = _make_test_df([
             {'timestamp': '2026-04-20 10:00:00', 'ID': 5, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 2.0},
             {'timestamp': '2026-04-20 10:00:01', 'ID': 5, 'Track_Age': 2, 'Dx': 100.0, 'Dy': 50.0},
         ])
-        speed = _segment_max_speed(df, ['Dx', 'Dy'])
+        extremes = _segment_spatial_extremes(df, ['Dx', 'Dy'])
+        assert extremes is not None
+        max_dist, max_speed = extremes
         # dist = sqrt(90^2 + 48^2) ≈ 102.0, dt=1s → ≈102 m/s
-        assert speed is not None and speed > 100
+        assert max_dist > 100
+        assert max_speed > 100
+
+    def test_spatial_anomaly_by_distance_only(self):
+        """位移判据独立生效：速度未超阈值但单帧位移超阈值 → 标记。
+
+        本例 Δt=400ms（< 500ms 间隔阈值，避免规则 D 抢先切分），
+        位移 6m → 微分速度 15 m/s（远低于 MAX_TRACK_SPEED=50），
+        但位移 6m 超过 POS_JUMP_THRESHOLD=5m，应被标记。旧的速度判据会漏判。
+        """
+        df = _make_test_df([
+            {'timestamp': '2026-04-20 10:00:00.000', 'ID': 5, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 2.0},
+            # Δt=400ms, 位移 6m → 15 m/s（速度未超阈值, 但位移超阈值）
+            {'timestamp': '2026-04-20 10:00:00.400', 'ID': 5, 'Track_Age': 2, 'Dx': 16.0, 'Dy': 2.0},
+        ])
+        meta, segs = segment_trajectories(df)
+        assert len(meta) == 1
+        assert bool(meta.iloc[0]['spatial_anomaly']) is True
+
+    def test_spatial_anomaly_absent_when_speed_under_both(self):
+        """高速短间隔但位移未超阈值、且速度未超阈值 → 不标记。
+
+        20Hz 下 0.32 m/s 对应单帧位移仅 0.016m，远低于 5m 阈值，
+        验证用户报告的"Vx 很小却被标记"场景在位移判据下不再误标。
+        """
+        df = _make_test_df([
+            {'timestamp': '2026-04-20 10:00:00.000', 'ID': 5, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 2.0},
+            {'timestamp': '2026-04-20 10:00:00.050', 'ID': 5, 'Track_Age': 2, 'Dx': 10.016, 'Dy': 2.0},
+        ])
+        meta, segs = segment_trajectories(df)
+        assert bool(meta.iloc[0]['spatial_anomaly']) is False
+
+    def test_spatial_anomaly_sampling_rate_independent(self):
+        """同一物理跳变(单帧位移 6m)在不同采样率下判定一致。
+
+        10Hz: 位移6m/速度60m/s  → 两判据均命中
+        20Hz: 位移6m/速度120m/s → 两判据均命中
+        验证位移判据不随采样率漂移。
+        """
+        for freq_ms in (100, 50):
+            df = _make_test_df([
+                {'timestamp': '2026-04-20 10:00:00.000', 'ID': 5, 'Track_Age': 1, 'Dx': 10.0, 'Dy': 2.0},
+                {'timestamp': f'2026-04-20 10:00:00.{freq_ms:03d}', 'ID': 5, 'Track_Age': 2, 'Dx': 16.0, 'Dy': 2.0},
+            ])
+            meta, _ = segment_trajectories(df)
+            assert bool(meta.iloc[0]['spatial_anomaly']) is True, f'{freq_ms}ms 采样率下应一致标记'
 
     # ---- 改动 2: 跨文件同 (ID, timestamp) 不再误删 ----
 

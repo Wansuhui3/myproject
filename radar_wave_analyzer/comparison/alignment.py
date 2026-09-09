@@ -48,6 +48,7 @@ def align_trajectories(
     match_threshold_m: float = 5.0,
     time_gate_ms: float = 50.0,
     file_index: int = None,
+    custom_mappings: list[dict] | None = None,
 ) -> dict:
     """核心对齐算法 — 一次调用完成全部4步。
 
@@ -75,7 +76,7 @@ def align_trajectories(
         radar_df: 雷达全量数据（含 timestamp_parsed, ID, Dx, Dy, Vx, Vy）。
         rtk_df: RTK全量数据（含 timestamp_parsed, center_x, center_y, Vx, Vy）。
         track_id: 选定的雷达目标ID。
-        delay_ms: 时间延迟补偿(毫秒)，正=雷达比RTK晚。
+        delay_ms: 应用于雷达时间戳的时间补偿（毫秒）；正值表示将雷达时刻向后移动。
         match_threshold_m: 空间匹配阈值(米)。
         time_gate_ms: 时间门控(毫秒)，匹配帧的RTK插值时间差超过此值标记告警。
         file_index: 可选，来源文件序号。多文件场景下用于过滤同ID不同时间段的数据。
@@ -158,6 +159,14 @@ def align_trajectories(
     vx_interp = interp_values['Vx']
     vy_interp = interp_values['Vy']
 
+    # RTK 覆盖范围外不做首尾常数外推。保留 NaN，避免把伪造的真值
+    # 带入图表或任何后续统计；这些帧由 within_rtk_range 单独计数。
+    within_rtk_range = (
+        (t_compensated >= rtk_ts[0]) & (t_compensated <= rtk_ts[-1])
+    )
+    for values in (cx_interp, cy_interp, vx_interp, vy_interp):
+        values[~within_rtk_range] = np.nan
+
     # ── Step3: 逐帧空间匹配 ──
     dx_err = seg_df['Dx'].values - cx_interp
     dy_err = seg_df['Dy'].values - cy_interp
@@ -166,8 +175,12 @@ def align_trajectories(
 
     # ── Time-gate: 最近 RTK 样本的时间差超过阈值或超出 RTK 采样范围则剔除 ──
     time_diff_ms = np.abs(t_compensated - rtk_ts[rtk_idx]) * 1000.0
-    within_rtk_range = (t_compensated >= rtk_ts[0]) & (t_compensated <= rtk_ts[-1])
-    time_gated = (time_diff_ms <= time_gate_ms) & within_rtk_range
+    time_gated = (
+        (time_diff_ms <= time_gate_ms)
+        & within_rtk_range
+        & np.isfinite(cx_interp)
+        & np.isfinite(cy_interp)
+    )
     is_matched = spatial_matched & time_gated
 
     # ── Step4: 误差计算 ──
@@ -205,12 +218,76 @@ def align_trajectories(
         'is_matched': is_matched,
     })
 
+    # 自定义显示映射：列名保持 CSV 原始表头。目标关联仍使用标准 Dx/Dy，
+    # 自定义通道只负责显示与兼容单位下的误差统计，不改变匹配结论。
+    mapping_results = []
+    for mapping in custom_mappings or []:
+        radar_col = mapping.get('radar_col')
+        rtk_col = mapping.get('rtk_col')
+        has_radar = bool(radar_col) and radar_col in seg_df.columns
+        has_rtk = bool(rtk_col) and rtk_col in rtk_df.columns
+        if not has_radar and not has_rtk:
+            continue
+        radar_values = (
+            pd.to_numeric(seg_df[radar_col], errors='coerce').to_numpy(dtype=float)
+            if has_radar else np.full(len(t_compensated), np.nan, dtype=float)
+        )
+        rtk_values = np.full(len(t_compensated), np.nan, dtype=float)
+        if has_rtk:
+            raw_rtk_values = pd.to_numeric(rtk_df[rtk_col], errors='coerce').to_numpy(dtype=float)
+            valid_rtk = np.isfinite(rtk_ts) & np.isfinite(raw_rtk_values)
+            if not valid_rtk.any():
+                # 真值单线没有有效数值时不能绘制；雷达单线仍可正常显示。
+                if not has_radar:
+                    continue
+            else:
+                valid_rtk_ts = rtk_ts[valid_rtk]
+                valid_rtk_values = raw_rtk_values[valid_rtk]
+                if len(valid_rtk_values) == 1:
+                    rtk_values = np.full(len(t_compensated), valid_rtk_values[0], dtype=float)
+                else:
+                    rtk_values = np.interp(
+                        t_compensated, valid_rtk_ts, valid_rtk_values,
+                        left=valid_rtk_values[0], right=valid_rtk_values[-1],
+                    )
+                rtk_values[~within_rtk_range] = np.nan
+        error_values = radar_values - rtk_values
+        uid = str(mapping.get('uid', f'mapping-{len(mapping_results) + 1}'))
+        radar_output = f'radar[{radar_col}]' if has_radar else ''
+        rtk_output = f'rtk[{rtk_col}]' if has_rtk else ''
+        error_output = f'error[{radar_col}-{rtk_col}]' if has_radar and has_rtk else ''
+        if radar_output:
+            aligned_df[radar_output] = np.round(radar_values, 6)
+        if rtk_output:
+            aligned_df[rtk_output] = np.round(rtk_values, 6)
+        if error_output:
+            aligned_df[error_output] = np.round(error_values, 6)
+
+        valid_stats = is_matched & np.isfinite(error_values)
+        metrics = None
+        if mapping.get('stats_enabled') and valid_stats.any():
+            metrics = _compute_error_metrics(error_values[valid_stats])
+        mapping_results.append({
+            **mapping,
+            'uid': uid,
+            'radar_output_col': radar_output,
+            'rtk_output_col': rtk_output,
+            'error_output_col': error_output,
+            'rtk_curve_col': rtk_col if has_rtk else '',
+            'metrics': metrics,
+            'valid_frames': int(valid_stats.sum()),
+        })
+
     matched_frames = int(is_matched.sum())
 
     # ── 汇总统计 ──
     # 质量指标只使用通过空间阈值和时间门控的有效匹配帧。未匹配帧只反映在
     # 匹配率及拒绝原因中，不能混入 RMSE/P95 等结果而误导算法质量判断。
     matched_df = aligned_df.loc[aligned_df['is_matched']]
+    # 时间有效样本保留空间门控拒绝帧，用于暴露整体误差；它仍然只包含
+    # 有 RTK 真值且满足时间门控的配对帧，不会把无真值帧硬算进 RMSE。
+    time_valid = aligned_df['within_time_gate'] & aligned_df['within_rtk_range']
+    time_valid_df = aligned_df.loc[time_valid]
     summary = {
         'pos_error_x': _compute_error_metrics(matched_df['pos_error_x'].values),
         'pos_error_y': _compute_error_metrics(matched_df['pos_error_y'].values),
@@ -218,6 +295,15 @@ def align_trajectories(
         'vel_error_x': _compute_error_metrics(matched_df['vel_error_x'].values),
         'vel_error_y': _compute_error_metrics(matched_df['vel_error_y'].values),
         'vel_error_abs': _compute_error_metrics(matched_df['vel_error_abs'].values),
+        'pos_error_abs_time_valid': _compute_error_metrics(
+            time_valid_df['pos_error_abs'].values,
+        ),
+        'pos_error_x_time_valid': _compute_error_metrics(
+            time_valid_df['pos_error_x'].values,
+        ),
+        'pos_error_y_time_valid': _compute_error_metrics(
+            time_valid_df['pos_error_y'].values,
+        ),
     }
 
     match_summary = {
@@ -226,8 +312,11 @@ def align_trajectories(
         'match_rate': round(matched_frames / total_frames, 4) if total_frames > 0 else 0.0,
         'track_id': track_id,
         'delay_ms': delay_ms,
-        'spatial_rejected_frames': int((~spatial_matched).sum()),
-        'time_rejected_frames': int((spatial_matched & ~time_gated).sum()),
+        'time_valid_frames': int(time_valid.sum()),
+        'spatial_rejected_frames': int(
+            (within_rtk_range & time_gated & ~spatial_matched).sum()
+        ),
+        'time_rejected_frames': int((within_rtk_range & ~time_gated).sum()),
         'out_of_rtk_range_frames': int((~within_rtk_range).sum()),
     }
 
@@ -244,61 +333,5 @@ def align_trajectories(
         'summary': summary,
         'match_summary': match_summary,
         'rtk_curve_df': rtk_curve_df,
+        'mapping_results': mapping_results,
     }
-
-
-def compute_distance_bin_stats(
-    aligned_df: pd.DataFrame,
-    bins: list,
-) -> list:
-    """按距离区间分桶统计位置误差。
-
-    使用 radar_Dx (纵向距离) 作为距离指标进行分桶。
-    对每个区间 [lo, hi) 统计 pos_error_abs 的帧数/Mean/Std/RMSE/Max。
-
-    Args:
-        aligned_df: 对齐结果DataFrame。
-        bins: 距离边界列表，如 [0, 10, 20, 30, 40, 50, 80, 120]。
-
-    Returns:
-        [{bin, frames, mean, std, rmse, max}, ...]
-    """
-    if len(aligned_df) == 0:
-        return []
-
-    # 误差分桶与总体摘要保持同一口径：仅统计有效匹配帧。
-    if 'is_matched' in aligned_df.columns:
-        aligned_df = aligned_df[aligned_df['is_matched']]
-    if len(aligned_df) == 0:
-        return []
-
-    results = []
-    for i in range(len(bins) - 1):
-        lo = bins[i]
-        hi = bins[i + 1]
-        mask = (aligned_df['radar_Dx'] >= lo) & (aligned_df['radar_Dx'] < hi)
-        seg = aligned_df[mask]
-
-        if len(seg) == 0:
-            results.append({
-                'bin': f'{lo}-{hi}m',
-                'frames': 0,
-                'mean': None,
-                'std': None,
-                'rmse': None,
-                'max': None,
-            })
-            continue
-
-        errors = seg['pos_error_abs'].values
-        valid = errors[~np.isnan(errors)]
-        results.append({
-            'bin': f'{lo}-{hi}m',
-            'frames': len(seg),
-            'mean': round(float(np.mean(valid)), 3) if len(valid) > 0 else None,
-            'std': round(float(np.std(valid)), 3) if len(valid) > 0 else None,
-            'rmse': round(float(np.sqrt(np.mean(valid ** 2))), 3) if len(valid) > 0 else None,
-            'max': round(float(np.max(np.abs(valid))), 3) if len(valid) > 0 else None,
-        })
-
-    return results

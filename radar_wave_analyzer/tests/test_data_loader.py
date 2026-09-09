@@ -1,13 +1,10 @@
 """
 data_loader 模块单元测试。
 """
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from radar_wave_analyzer.core.data_loader import identify_radar_source, parse_timestamp, parse_timestamp_series, load_csv
 
 import pandas as pd
 import pytest
-from core.data_loader import identify_radar_source, parse_timestamp, parse_timestamp_series, load_csv
 
 
 def test_identify_front_and_rear_radar_from_filename():

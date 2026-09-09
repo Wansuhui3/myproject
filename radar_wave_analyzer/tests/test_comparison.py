@@ -1,26 +1,24 @@
 """雷达与 RTK 真值对齐、延迟扫描的回归测试。"""
-import os
-import sys
-
 import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from comparison.alignment import (  # noqa: E402
+from radar_wave_analyzer.comparison.alignment import (  # noqa: E402
     _nearest_indices,
     align_trajectories,
-    compute_distance_bin_stats,
 )
-from comparison.delay_detect import scan_delay  # noqa: E402
-from comparison.parser import load_csv_file  # noqa: E402
-from comparison.matching import (  # noqa: E402
+from radar_wave_analyzer.comparison.delay_detect import scan_delay  # noqa: E402
+from radar_wave_analyzer.comparison.file_identity import (  # noqa: E402
+    compact_filename_label,
+    natural_filename_key,
+)
+from radar_wave_analyzer.comparison.parser import load_csv_file  # noqa: E402
+from radar_wave_analyzer.comparison.matching import (  # noqa: E402
     extract_radar_trajectory,
     filter_and_match_ids,
     filter_moving_radar_targets,
 )
-from comparison.service import (  # noqa: E402
+from radar_wave_analyzer.comparison.service import (  # noqa: E402
     analyse_selected_track,
     execute_alignment,
     prepare_comparison_upload,
@@ -71,11 +69,6 @@ def test_alignment_summary_excludes_unmatched_frames():
     assert result['match_summary']['spatial_rejected_frames'] == 1
     assert result['summary']['pos_error_abs']['rmse'] == 0.0
 
-    bins = compute_distance_bin_stats(result['aligned_df'], [0, 10, 200])
-    assert bins[0]['frames'] == 2
-    assert bins[1]['frames'] == 0
-
-
 def test_alignment_rejects_samples_outside_rtk_time_range():
     """RTK 范围外的帧不可因边界外推而标记为匹配。"""
     radar = _radar_df(np.array([0.2]), [0.0])
@@ -103,6 +96,8 @@ def test_delay_scan_requires_sufficient_coverage():
     assert result['min_rmse'] is None
     assert result['level'] == 'insufficient_coverage'
     assert result['delay_samples'][0]['matched_frames'] == 2
+    assert result['baseline']['delay_ms'] == 0
+    assert result['optimal'] is None
 
 
 def test_comparison_parser_drops_non_numeric_measurements():
@@ -150,6 +145,51 @@ def test_comparison_parser_reports_missing_velocity_columns():
     assert '缺少必要列: Vy' in result['errors']
 
 
+def test_comparison_parser_preserves_original_physical_field_names():
+    """CSV 原始表头必须保留，同时提供既有算法需要的标准别名。"""
+    content = (
+        'timestamp,ID,CX,CY,VX,VY,VehicleSpeed\n'
+        '2026_04_20_10_00_00_000,1,1.0,2.0,0.1,0.2,3.5\n'
+    ).encode('utf-8')
+
+    result = load_csv_file(content, 'truth.csv')
+
+    assert result['errors'] == []
+    assert 'CX' in result['df'].columns
+    assert 'center_x' in result['df'].columns
+    assert result['df']['CX'].iloc[0] == pytest.approx(1.0)
+    assert result['df']['center_x'].iloc[0] == pytest.approx(1.0)
+    field_names = [field['name'] for field in result['physical_fields']]
+    assert field_names == ['CX', 'CY', 'VX', 'VY', 'VehicleSpeed']
+    assert result['original_to_internal']['CX'] == 'center_x'
+
+
+def test_alignment_supports_original_name_custom_mapping():
+    """自定义映射按 CSV 原名插值、绘图并在单位兼容时统计误差。"""
+    radar = _radar_df(np.array([0.0, 0.05, 0.1]), [0.0, 1.0, 2.0])
+    radar['RawRange'] = [10.0, 11.0, 12.0]
+    rtk = _rtk_df(np.array([0.0, 0.05, 0.1]), [0.0, 1.0, 2.0])
+    rtk['TruthRange'] = [9.5, 10.5, 11.5]
+
+    result = align_trajectories(
+        radar, rtk, 7, match_threshold_m=1.0, time_gate_ms=60.0,
+        custom_mappings=[{
+            'uid': 'mapping-1',
+            'radar_col': 'RawRange',
+            'rtk_col': 'TruthRange',
+            'unit': 'm',
+            'unit_status': 'compatible',
+            'stats_enabled': True,
+        }],
+    )
+
+    mapping = result['mapping_results'][0]
+    assert mapping['radar_col'] == 'RawRange'
+    assert mapping['rtk_col'] == 'TruthRange'
+    assert mapping['metrics']['rmse'] == pytest.approx(0.5)
+    assert result['aligned_df']['radar[RawRange]'].tolist() == [10.0, 11.0, 12.0]
+
+
 def test_comparison_service_runs_selection_diagnosis_and_alignment():
     """服务层可在不依赖 Dash 或缓存的情况下编排完整对比计算。"""
     radar = _radar_df(np.array([0.0, 0.05, 0.1]), [0.0, 1.0, 2.0])
@@ -176,6 +216,22 @@ def test_comparison_service_runs_selection_diagnosis_and_alignment():
     assert result['match_summary']['matched_frames'] == 3
 
 
+def test_execute_alignment_keeps_complete_selected_rtk_curve():
+    """绘图数据应保留关联 RTK 的完整时域，区间外样本不得混入误差统计。"""
+    radar = _radar_df(np.array([1.0, 1.05, 1.10]), [0.0, 1.0, 2.0])
+    rtk = _rtk_df(
+        np.array([0.0, 1.0, 1.05, 1.10, 2.0]),
+        [100.0, 0.0, 1.0, 2.0, 100.0],
+    )
+    config = {'match_threshold': 1.0, 'time_gate_ms': 50.0}
+
+    result = execute_alignment(radar, rtk, config, 7, rtk_id=1)
+
+    assert result['match_summary']['total_frames'] == 3
+    assert result['match_summary']['matched_frames'] == 3
+    assert result['rtk_curve_df']['timestamp_parsed'].tolist() == [0.0, 1.0, 1.05, 1.10, 2.0]
+
+
 def test_comparison_upload_service_merges_by_parsed_timestamp():
     """多文件上传应保留来源序号，并依据解析后的时间全局排序。"""
     late = (
@@ -195,10 +251,82 @@ def test_comparison_upload_service_merges_by_parsed_timestamp():
     assert result['file_count'] == 2
     assert result['info']['df']['Dx'].tolist() == [1.0, 3.0]
     assert result['info']['df']['file_index'].tolist() == [1, 0]
+    assert result['info']['df']['source_filename'].tolist() == ['early.csv', 'late.csv']
 
 
-def test_comparison_upload_service_rejects_wrong_drop_zone():
-    """RTK 文件被拖入雷达区域时应得到可理解的错误而不是错误缓存。"""
+@pytest.mark.parametrize('reverse_upload_order', [False, True])
+def test_comparison_upload_sample_rate_ignores_unmeasurable_files(reverse_upload_order):
+    """多文件时间帧率不能继承首个文件，也不能把同一时刻的目标数当作采样率。"""
+    measurable = (
+        'timestamp,ID,Track_Age,Dx,Dy,Vx,Vy\n'
+        '2026_04_20_10_00_00_000,7,1,1.0,0.0,0.0,0.0\n'
+        '2026_04_20_10_00_00_050,7,2,1.1,0.0,0.0,0.0\n'
+        '2026_04_20_10_00_00_100,7,3,1.2,0.0,0.0,0.0\n'
+    ).encode('utf-8')
+    unmeasurable = (
+        'timestamp,ID,Track_Age,Dx,Dy,Vx,Vy\n'
+        '2026_04_20_10_00_00_000,8,1,2.0,0.0,0.0,0.0\n'
+        '2026_04_20_10_00_00_000,9,1,3.0,0.0,0.0,0.0\n'
+    ).encode('utf-8')
+    files = [
+        (unmeasurable, 'single-frame.csv'),
+        (measurable, '20hz.csv'),
+    ]
+    if reverse_upload_order:
+        files.reverse()
+
+    result = prepare_comparison_upload(files, 'radar')
+
+    assert result['errors'] == []
+    assert result['info']['sample_rate_hz'] == pytest.approx(20.0)
+    assert result['info']['sample_rate_label'] == '20.0Hz'
+    assert '1/2个文件无法估算时间帧率' in result['info']['sample_rate_note']
+
+
+def test_comparison_upload_sample_rate_reports_mixed_file_rates():
+    """各文件时间帧率确实不一致时，预览应显示范围而非伪造单一精确值。"""
+    rate_20hz = (
+        'timestamp,ID,Track_Age,Dx,Dy,Vx,Vy\n'
+        '2026_04_20_10_00_00_000,7,1,1.0,0.0,0.0,0.0\n'
+        '2026_04_20_10_00_00_050,7,2,1.1,0.0,0.0,0.0\n'
+    ).encode('utf-8')
+    rate_10hz = (
+        'timestamp,ID,Track_Age,Dx,Dy,Vx,Vy\n'
+        '2026_04_20_10_00_01_000,8,1,2.0,0.0,0.0,0.0\n'
+        '2026_04_20_10_00_01_100,8,2,2.1,0.0,0.0,0.0\n'
+    ).encode('utf-8')
+
+    result = prepare_comparison_upload(
+        [(rate_20hz, '20hz.csv'), (rate_10hz, '10hz.csv')], 'radar',
+    )
+
+    assert result['errors'] == []
+    assert result['info']['sample_rate_hz'] == pytest.approx(15.0)
+    assert result['info']['sample_rate_label'] == '10.0–20.0Hz'
+    assert '各文件时间帧率不一致' in result['info']['sample_rate_note']
+
+
+def test_comparison_filename_uses_compact_label_and_natural_folder_order():
+    """长文件名应显示结构化短名称，并保持与文件夹自然排序一致。"""
+    filenames = [
+        'CD701_rlr_track_2026_08_11_16_44_13.csv',
+        'CD701_flr_track_2026_08_11_16_44_13.csv',
+        'CD701_rlr_track_2026_08_11_15_57_24.csv',
+        'CD701_flr_track_2026_08_11_15_57_24.csv',
+    ]
+
+    assert sorted(filenames, key=natural_filename_key) == [
+        'CD701_flr_track_2026_08_11_15_57_24.csv',
+        'CD701_flr_track_2026_08_11_16_44_13.csv',
+        'CD701_rlr_track_2026_08_11_15_57_24.csv',
+        'CD701_rlr_track_2026_08_11_16_44_13.csv',
+    ]
+    assert compact_filename_label(filenames[3]) == 'CD701 · 08-11 15:57:24'
+    assert compact_filename_label(filenames[0]) == 'CD701 · 08-11 16:44:13'
+
+
+def test_comparison_upload_service_routes_wrong_drop_zone():
+    """RTK 文件被拖入雷达区域时自动归类到另一区域，而不是报错丢弃。"""
     rtk = (
         'timestamp,ID,center_x,center_y,Vx,Vy\n'
         '2026_04_20_10_00_00_000,1,1.0,2.0,0.0,0.0\n'
@@ -207,7 +335,11 @@ def test_comparison_upload_service_rejects_wrong_drop_zone():
     result = prepare_comparison_upload([(rtk, 'truth.csv')], 'radar')
 
     assert result['info'] is None
-    assert any('请上传到雷达区域' in error for error in result['errors'])
+    assert result['errors'] == []
+    routed = result['routed']
+    assert routed['role'] == 'rtk'
+    assert routed['file_count'] == 1
+    assert routed['info']['df']['ID'].iloc[0] == 1
 
 
 def test_motion_filter_removes_static_ids_and_matches_remaining_ids_one_to_one():
@@ -253,6 +385,33 @@ def test_motion_filter_removes_static_ids_and_matches_remaining_ids_one_to_one()
     assert {item['track_id'] for item in result['valid_match_ids']} == {20, 30}
 
 
+def test_motion_status_two_requires_status_one_in_the_same_track_segment():
+    """孤立的状态2不参与匹配；与状态1同段出现时保留，状态4可独立保留。"""
+    rows = []
+    for track_id, statuses in {
+        10: [2, 2, 2],
+        20: [1, 2, 2],
+        30: [4, 4, 4],
+        40: [3, 3, 3],
+    }.items():
+        for frame, motion_status in enumerate(statuses):
+            rows.append({
+                'timestamp_parsed': frame * 0.1,
+                'ID': track_id,
+                'Track_Age': frame + 1,
+                'Dx': frame * 2.0,
+                'Dy': 0.0,
+                'Vx': 10.0,
+                'Vy': 0.0,
+                'MotionStatus': motion_status,
+            })
+
+    result = filter_moving_radar_targets(pd.DataFrame(rows))
+
+    assert {item['track_id'] for item in result['active_targets']} == {20, 30}
+    assert result['filter_stats']['filtered_motion_status_targets'] == 2
+
+
 def test_multi_file_same_id_is_retained_by_file_time_and_track_age_segments():
     """三份文件复用同一雷达/RTK ID 时，必须保留三条独立的有效关联。"""
     radar_rows = []
@@ -265,6 +424,7 @@ def test_multi_file_same_id_is_retained_by_file_time_and_track_age_segments():
                 'timestamp': f'radar-{file_index}-{frame}',
                 'timestamp_parsed': timestamp,
                 'file_index': file_index,
+                'source_filename': f'radar_{file_index}.csv',
                 'ID': 7,
                 'Track_Age': frame + 1,
                 'Dx': position,
@@ -276,6 +436,7 @@ def test_multi_file_same_id_is_retained_by_file_time_and_track_age_segments():
                 'timestamp': f'rtk-{file_index}-{frame}',
                 'timestamp_parsed': timestamp,
                 'file_index': file_index,
+                'source_filename': f'truth_{file_index}.csv',
                 'ID': 100,
                 'center_x': position,
                 'center_y': 0.0,
@@ -301,6 +462,12 @@ def test_multi_file_same_id_is_retained_by_file_time_and_track_age_segments():
     assert result['filter_stats']['matched_target_pairs'] == 3
     assert [(item['file_index'], item['rtk_file_index']) for item in result['valid_match_ids']] == [
         (0, 0), (1, 1), (2, 2),
+    ]
+    assert [item['radar_filename'] for item in result['valid_match_ids']] == [
+        'radar_0.csv', 'radar_1.csv', 'radar_2.csv',
+    ]
+    assert [item['rtk_filename'] for item in result['valid_match_ids']] == [
+        'truth_0.csv', 'truth_1.csv', 'truth_2.csv',
     ]
 
 

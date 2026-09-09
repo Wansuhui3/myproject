@@ -1,9 +1,9 @@
 """
 真值对比图表构建模块。
 构建雷达 vs RTK 的对比子图（双线叠加/误差散点）。
-复用 graph_builder 的 _compute_subplot_y_domains、_wrap_with_resampler、配色方案。
+降采样/子图布局等共享工具与统一色板见 chart_common。
 """
-from datetime import UTC, datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import numpy as np
@@ -11,13 +11,25 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from ..config import get
+from .chart_common import COLORS, _select_display_indices, _wrap_with_resampler
+
+
 def _fmt_ts(epoch_sec):
-    """将 epoch 秒数格式化为统一的 ``YYYY-MM-DD HH:mm:ss.SSS``。"""
+    """按本地时区格式化 epoch 秒数，与 Plotly 日期横轴保持一致。"""
     if epoch_sec is None or (isinstance(epoch_sec, float) and np.isnan(epoch_sec)):
         return 'N/A'
-    # comparison.parser 用无时区 datetime 相对 epoch 计算秒数；这里必须使用
-    # UTC 解释该数值，不能受运行机器本地时区影响而平移 8 小时。
-    dt = datetime.fromtimestamp(float(epoch_sec), UTC)
+    # comparison.parser 将 CSV 墙钟时间换算为真实 epoch 秒。Plotly 日期轴在
+    # WebView/浏览器中按本地时区显示，悬浮框必须使用同一口径，避免相差 8 小时。
+    # Windows CRT 的 localtime 不支持 1970-01-01 00:00 UTC 之前的时间戳
+    # （负值抛 OSError [Errno 22]），先做 UTC 纯算术再取本地时区；测试用的
+    # 合成时间戳可能落在 epoch 附近，此时以当前本地偏移兜底（真实数据为
+    # 近期日期，不走此分支）。
+    dt_utc = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=float(epoch_sec))
+    try:
+        dt = dt_utc.astimezone()
+    except OSError:
+        dt = dt_utc + datetime.now().astimezone().utcoffset()
     ms = dt.microsecond // 1000
     return f'{dt.year:04d}-{dt.month:02d}-{dt.day:02d} {dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}.{ms:03d}'
 
@@ -31,11 +43,36 @@ def _fmt_clock(timestamp_label) -> str:
 _fmt_ts_vec = np.vectorize(_fmt_ts)
 
 
-def _insert_radar_gap_breaks(timestamps, values, hover_texts, gap_factor: float = 2.5):
-    """在雷达采样中断处插入 None 断点，并返回边界标记。
+def _find_radar_gap_indices(timestamps, gap_factor: float = 2.5) -> np.ndarray:
+    """在完整雷达时间序列中查找真实中断的前帧索引。
 
-    阈值按该轨迹的中位采样间隔自适应计算，因此既适合 20Hz 数据，也适合
-    其他采样率。RTK 曲线不经过这里，保持其原始连续采样。
+    必须在显示降采样前调用。若在降采样后的点上判断，相邻保留点之间被
+    跳过的正常帧会被误判为中断。
+    """
+    x = np.asarray(timestamps, dtype=float)
+    if len(x) < 2:
+        return np.array([], dtype=np.int64)
+    diffs = np.diff(x)
+    positive_diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+    if len(positive_diffs) == 0:
+        return np.array([], dtype=np.int64)
+    nominal_period = float(np.percentile(positive_diffs, 25))
+    if nominal_period <= 0:
+        return np.array([], dtype=np.int64)
+    return np.flatnonzero(diffs > nominal_period * gap_factor).astype(np.int64)
+
+
+def _insert_radar_gap_breaks(
+    timestamps,
+    values,
+    hover_texts,
+    gap_factor: float = 2.5,
+    true_gap_start_times=None,
+):
+    """在真实雷达采样中断处插入 None 断点，并返回边界标记。
+
+    ``true_gap_start_times`` 由完整时间序列预先计算。仅当该参数未提供时
+    才回退到当前显示点间隔判断，保持旧调用的兼容性。
     """
     x = np.asarray(timestamps, dtype=float)
     y = np.asarray(values, dtype=float)
@@ -43,14 +80,13 @@ def _insert_radar_gap_breaks(timestamps, values, hover_texts, gap_factor: float 
     if len(x) < 2:
         return x.tolist(), y.tolist(), texts, [], [], []
 
-    positive_diffs = np.diff(x)
-    positive_diffs = positive_diffs[positive_diffs > 0]
-    if len(positive_diffs) == 0:
+    if true_gap_start_times is None:
+        gap_indices = _find_radar_gap_indices(x, gap_factor)
+        true_starts = x[gap_indices]
+    else:
+        true_starts = np.sort(np.asarray(true_gap_start_times, dtype=float))
+    if len(true_starts) == 0:
         return x.tolist(), y.tolist(), texts, [], [], []
-    # 普通中位数会被长中断本身抬高；用较低分位数近似正常采样周期，
-    # 才能在“少量正常帧 + 一次明显中断”的单文件数据中识别断点。
-    nominal_period = float(np.percentile(positive_diffs, 25))
-    gap_threshold = nominal_period * gap_factor
 
     plot_x, plot_y, plot_text = [], [], []
     marker_x, marker_y, marker_text = [], [], []
@@ -58,7 +94,15 @@ def _insert_radar_gap_breaks(timestamps, values, hover_texts, gap_factor: float 
         plot_x.append(float(x_value))
         plot_y.append(float(y_value))
         plot_text.append(text)
-        if index < len(x) - 1 and x[index + 1] - x_value > gap_threshold:
+        if index < len(x) - 1:
+            # 降采样后两个显示点之间可跨过很多正常帧；只有完整序列已确认
+            # 的中断起点落在这个显示区间内，才允许断线。
+            has_true_gap = np.any(
+                (true_starts >= x_value - 1e-9)
+                & (true_starts < x[index + 1] - 1e-9)
+            )
+            if not has_true_gap:
+                continue
             midpoint = float((x_value + x[index + 1]) / 2.0)
             plot_x.append(midpoint)
             plot_y.append(None)
@@ -72,26 +116,61 @@ def _insert_radar_gap_breaks(timestamps, values, hover_texts, gap_factor: float 
             ])
     return plot_x, plot_y, plot_text, marker_x, marker_y, marker_text
 
-try:
-    from .graph_builder import _compute_subplot_y_domains, _select_display_indices, _wrap_with_resampler
-except ImportError:
-    from graph_builder import _compute_subplot_y_domains, _select_display_indices, _wrap_with_resampler  # type: ignore
-
-try:
-    from ..config import get
-except ImportError:
-    from config import get  # type: ignore
-
-# 雷达配色（与 graph_builder 一致）
-_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
-           '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
-
-# RTK 对比色系：与雷达 _COLORS 一一对应，形成强烈视觉对比
+# RTK 对比色系：与雷达 COLORS 一一对应，形成强烈视觉对比
 # 蓝↔珊瑚红  橙↔青绿  绿↔紫  红↔深蓝  紫↔琥珀  棕↔翠绿  粉↔深红  灰↔金
 _RTK_COLORS = ['#e74c3c', '#16a085', '#8e44ad', '#3498db',
                '#e67e22', '#27ae60', '#c0392b', '#f39c12']
 
 _SCATTER_COLOR = '#dc2626'     # 误差散点红色
+_PERF_FAIL_COLOR = '#b91c1c'   # 误差不合格帧标记
+
+
+def _add_fail_highlights(
+    fig: go.Figure,
+    row: int,
+    timestamps: np.ndarray,
+    frames: pd.DataFrame,
+) -> None:
+    """在物理量子图上高亮普通精度不合格帧。
+
+    只添加失败帧标记点，不新增任何曲线，保持雷达/真值双曲线的原始
+    阅读形态；标记 y 值取自雷达曲线本身，不改变子图坐标尺度。
+    标记点随密度自适应缩小，海量重叠时降低透明度保持可读。
+    悬停不弹出提示框（无实际意义）。
+    """
+    n = len(frames)
+    if n == 0 or len(timestamps) != n:
+        return
+    valid = frames['valid'].to_numpy(dtype=bool)
+    if not valid.any():
+        return
+
+    abs_err = frames['abs_error'].to_numpy(dtype=float)
+    t_limit = frames['normal_limit'].to_numpy(dtype=float)
+    normal_pass = frames['normal_pass'].to_numpy(dtype=bool)
+    radar_val = frames['radar_value'].to_numpy(dtype=float)
+
+    fail_mask = valid & np.isfinite(abs_err) & ~normal_pass
+    if not fail_mask.any():
+        return
+
+    count = int(fail_mask.sum())
+    if count > 500:
+        size, opacity = 4, 0.65
+    elif count > 100:
+        size, opacity = 5, 0.75
+    else:
+        size, opacity = 6, 0.95
+
+    fig.add_trace(go.Scatter(
+        x=timestamps[fail_mask], y=radar_val[fail_mask],
+        mode='markers', name='误差不合格帧',
+        marker=dict(color=_PERF_FAIL_COLOR, size=size, symbol='circle',
+                    opacity=opacity),
+        # 悬浮提示框无实际意义，直接跳过，鼠标悬停不弹出任何方框
+        hoverinfo='skip',
+        showlegend=False,
+    ), row=row, col=1)
 
 
 def _build_overlay_subplot(
@@ -113,6 +192,10 @@ def _build_overlay_subplot(
     rtk_curve_y=None,
     rtk_curve_time_labels=None,
     gap_factor: float = 2.5,
+    true_gap_start_times=None,
+    show_difference: bool = True,
+    radar_unit: str | None = None,
+    rtk_unit: str | None = None,
 ):
     """构建一个双线叠加子图（雷达实线 + 真值平滑连续曲线），颜色对比鲜明。
 
@@ -136,12 +219,92 @@ def _build_overlay_subplot(
         rtk_name: 真值系列图例前缀（如 'RTK'）。
         rtk_source: 真值数据源名（如 'center_x'），用于图例后缀与悬停。
     """
-    color = _COLORS[color_idx % len(_COLORS)]
+    color = COLORS[color_idx % len(COLORS)]
     rtk_color = _RTK_COLORS[color_idx % len(_RTK_COLORS)]
 
     # 取两者都有效的公共点，确保悬停框能展示完整对比信息
     radar_series = pd.Series(radar_y, dtype=float)
     rtk_series = pd.Series(rtk_y, dtype=float)
+    # “雷达”或“真值”可单独选择。单线模式不应落入双线公共有效点
+    # 的判断，否则另一侧全为空时会被误认为没有可绘制的数据。
+    radar_present = radar_series.notna().any()
+    rtk_present = rtk_series.notna().any()
+    radar_display_unit = y_unit if radar_unit is None else radar_unit
+    rtk_display_unit = y_unit if rtk_unit is None else rtk_unit
+    y_title = f'{y_label}({y_unit})' if y_unit else y_label
+    yref = 'y domain' if row == 1 else f'y{row} domain'
+
+    if radar_present and not rtk_present:
+        valid = radar_series.notna().to_numpy()
+        x_values = np.asarray(timestamps)[valid]
+        values = radar_series[valid].to_numpy()
+        labels = np.asarray(radar_time_rel)[valid]
+        unit_suffix = f' {radar_display_unit}' if radar_display_unit else ''
+        hover_texts = [
+            f'{y_label}: {value:.3f}{unit_suffix}  {_fmt_clock(label)}'
+            for label, value in zip(labels, values)
+        ]
+        plot_x, plot_y, plot_text, gap_x, gap_y, gap_text = _insert_radar_gap_breaks(
+            x_values, values, hover_texts, gap_factor, true_gap_start_times,
+        )
+        fig.add_trace(go.Scatter(
+            x=plot_x, y=plot_y, mode='lines', name='',
+            line=dict(color=color, width=1.8), text=plot_text, hoverinfo='text',
+            hoverlabel=dict(bgcolor='#ffffff', bordercolor='#000000',
+                            font=dict(family='Consolas, Microsoft YaHei, monospace', size=12, color='#000000'),
+                            showarrow=False),
+            connectgaps=False, showlegend=False,
+        ), row=row, col=1)
+        if gap_x:
+            fig.add_trace(go.Scatter(
+                x=gap_x, y=gap_y, mode='markers',
+                marker=dict(color='#dc2626', symbol='x', size=8), text=gap_text,
+                hoverinfo='text', showlegend=False,
+            ), row=row, col=1)
+        fig.update_yaxes(title_text=y_title, title_font=dict(size=10, color=color),
+                         title_standoff=0, tickfont=dict(size=9, color=color), row=row, col=1)
+        fig.add_annotation(
+            text=f'<b>{radar_name} {y_label}{f" ({radar_display_unit})" if radar_display_unit else ""}</b>',
+            xref='x domain', yref=yref, x=0.99, y=0.93, xanchor='right', yanchor='middle',
+            showarrow=False, bgcolor='rgba(255,255,255,0.78)',
+            font=dict(size=11, color=color),
+        )
+        legend_shapes.append(dict(type='line', x0=0.99, y0=0.93, x1=1.0, y1=0.93,
+                                  xref='x domain', yref=yref, line=dict(color=color, width=2.5)))
+        return
+
+    if rtk_present and not radar_present:
+        if rtk_curve_timestamps is not None and rtk_curve_y is not None:
+            curve_values = pd.Series(rtk_curve_y, dtype=float)
+            valid = curve_values.notna().to_numpy()
+            x_values = np.asarray(rtk_curve_timestamps)[valid]
+            values = curve_values[valid].to_numpy()
+            labels = np.asarray(rtk_curve_time_labels)[valid]
+        else:
+            valid = rtk_series.notna().to_numpy()
+            x_values = np.asarray(timestamps)[valid]
+            values = rtk_series[valid].to_numpy()
+            labels = np.asarray(rtk_time_rel)[valid]
+        unit_suffix = f' {rtk_display_unit}' if rtk_display_unit else ''
+        fig.add_trace(go.Scatter(
+            x=x_values, y=values, mode='lines', name='',
+            line=dict(color=rtk_color, width=2.0, shape='spline', smoothing=1.3),
+            text=[f'{rtk_source}: {value:.3f}{unit_suffix}  {_fmt_clock(label)}'
+                  for label, value in zip(labels, values)],
+            hoverinfo='text', connectgaps=False, showlegend=False,
+        ), row=row, col=1)
+        fig.update_yaxes(title_text=y_title, title_font=dict(size=10, color=rtk_color),
+                         title_standoff=0, tickfont=dict(size=9, color=rtk_color), row=row, col=1)
+        fig.add_annotation(
+            text=f'<b>{rtk_name} {rtk_source}{f" ({rtk_display_unit})" if rtk_display_unit else ""}</b>',
+            xref='x domain', yref=yref, x=0.99, y=0.93, xanchor='right', yanchor='middle',
+            showarrow=False, bgcolor='rgba(255,255,255,0.78)',
+            font=dict(size=11, color=rtk_color),
+        )
+        legend_shapes.append(dict(type='line', x0=0.99, y0=0.93, x1=1.0, y1=0.93,
+                                  xref='x domain', yref=yref, line=dict(color=rtk_color, width=2.5)))
+        return
+
     valid = radar_series.notna() & rtk_series.notna()
     x_valid = timestamps[valid]
     r_valid = radar_series[valid].values
@@ -160,19 +323,26 @@ def _build_overlay_subplot(
     # ── 雷达实线（trace1）：承载唯一悬浮框，紧凑展示时间+雷达值+真值+差值 ──
     # hoverinfo="text" 屏蔽 Plotly 默认追加的 x 坐标数值，仅渲染 text 属性内容
     # hoverlabel showarrow=False 关闭悬浮框到曲线的蓝色连接引线
-    unit_suffix = f' {y_unit}' if y_unit else ''
+    radar_unit_suffix = f' {radar_display_unit}' if radar_display_unit else ''
+    rtk_unit_suffix = f' {rtk_display_unit}' if rtk_display_unit else ''
+    error_unit_suffix = radar_unit_suffix if show_difference else ''
     radar_label = y_label.ljust(8)
     rtk_label = rtk_source.ljust(8)
-    hover_texts = [
-        f'{radar_label}: {rv:.3f}{unit_suffix}  {_fmt_clock(rt)}<br>'
-        f'{rtk_label}: {tv:.3f}{unit_suffix}  {_fmt_clock(rkt)}<br>'
-        f'<b>绝对误差 {ad:.3f}{unit_suffix}</b>'
-        for rt, rv, rkt, tv, ad in zip(
-            radar_time_valid, r_valid, rtk_time_valid, t_valid, abs_diff_arr
+    hover_texts = []
+    for rt, rv, rkt, tv, ad in zip(
+        radar_time_valid, r_valid, rtk_time_valid, t_valid, abs_diff_arr
+    ):
+        comparison_line = (
+            f'<b>绝对误差 {ad:.3f}{error_unit_suffix}</b>'
+            if show_difference else '<b>仅叠加显示（单位未确认或不兼容）</b>'
         )
-    ]
+        hover_texts.append(
+            f'{radar_label}: {rv:.3f}{radar_unit_suffix}  {_fmt_clock(rt)}<br>'
+            f'{rtk_label}: {tv:.3f}{rtk_unit_suffix}  {_fmt_clock(rkt)}<br>'
+            f'{comparison_line}'
+        )
     plot_x, plot_y, plot_text, gap_x, gap_y, gap_text = _insert_radar_gap_breaks(
-        x_valid, r_valid, hover_texts, gap_factor,
+        x_valid, r_valid, hover_texts, gap_factor, true_gap_start_times,
     )
     fig.add_trace(go.Scatter(
         x=plot_x, y=plot_y,
@@ -245,7 +415,7 @@ def _build_overlay_subplot(
 
     # 雷达
     fig.add_annotation(
-        text=f'<b>{radar_name} {y_label} ({y_unit})</b>',
+        text=f'<b>{radar_name} {y_label}{f" ({radar_display_unit})" if radar_display_unit else ""}</b>',
         xref='x domain', yref=yref,
         x=0.99, y=leg_y_radar,
         xanchor='right', yanchor='middle',
@@ -262,7 +432,7 @@ def _build_overlay_subplot(
 
     # 真值
     fig.add_annotation(
-        text=f'<b>{rtk_name} {rtk_source} ({y_unit})</b>',
+        text=f'<b>{rtk_name} {rtk_source}{f" ({rtk_display_unit})" if rtk_display_unit else ""}</b>',
         xref='x domain', yref=yref,
         x=0.99, y=leg_y_rtk,
         xanchor='right', yanchor='middle',
@@ -294,7 +464,7 @@ def _build_error_subplot(
     Args:
         zero_line: 是否添加零线。
     """
-    color = _COLORS[color_idx % len(_COLORS)]
+    color = COLORS[color_idx % len(COLORS)]
 
     # 零线
     if zero_line:
@@ -344,6 +514,7 @@ def build_comparison_subplots(
     quantities_config: dict,
     trajectory_label: str = '',
     rtk_curve_df: Optional[pd.DataFrame] = None,
+    perf_results: Optional[dict] = None,
 ) -> go.Figure:
     """构建对比多子图（纵向堆叠，共享X轴）。数据驱动，根据 config 中 chart_type 决定子图类型。
 
@@ -358,6 +529,8 @@ def build_comparison_subplots(
         selected_quantities: 用户选中的对比指标列表。
         quantities_config: comparison.quantities 配置。
         trajectory_label: 轨迹标签（如 'ID=36'）。
+        perf_results: 性能指标评估结果 {metric: evaluate_metric 返回}；
+            overlay 子图会按物理量标签匹配并叠加动态阈值与违规标记（文档 10.4）。
 
     Returns:
         Plotly Figure。
@@ -375,12 +548,23 @@ def build_comparison_subplots(
         display_columns.extend([
             info.get('radar_col', ''), info.get('rtk_col', ''), info.get('field', ''),
         ])
+    # 中断先在完整雷达序列计算，再将中断两侧点强制保留到显示索引中。
+    # 这样曲线仍可按规模降采样，但不会把抽样跳点误显示成数据中断。
+    full_timestamps = aligned_df['timestamp_parsed'].to_numpy(dtype=float)
+    true_gap_indices = _find_radar_gap_indices(full_timestamps)
     display_indices = _select_display_indices(aligned_df, display_columns)
+    if len(true_gap_indices):
+        gap_boundary_indices = np.concatenate([
+            true_gap_indices,
+            np.minimum(true_gap_indices + 1, len(aligned_df) - 1),
+        ])
+        display_indices = np.unique(np.concatenate([display_indices, gap_boundary_indices]))
     aligned_df = aligned_df.iloc[display_indices].reset_index(drop=True)
 
-    # 转换为相对时间（秒），避免 epoch 秒数在坐标轴上显示为科学计数法
-    t0 = aligned_df['timestamp_parsed'].iloc[0]
-    timestamps = (aligned_df['timestamp_parsed'] - t0).to_numpy(dtype=float)
+    # 使用真实 epoch 毫秒并声明 date 坐标轴。不能使用相对秒，否则横轴会和
+    # CSV 时间戳脱节；毫秒数同时保持中断检测函数所需的数值比较语义。
+    timestamps = aligned_df['timestamp_parsed'].to_numpy(dtype=float) * 1000.0
+    true_gap_start_times = full_timestamps[true_gap_indices] * 1000.0
 
     # 雷达/真值 CSV 真实时间戳 → 可读格式 "Jul 1, 2026, 17:15:29.576"
     if 'radar_ts_parsed' in aligned_df.columns:
@@ -398,13 +582,17 @@ def build_comparison_subplots(
     if rtk_curve_df is not None and not rtk_curve_df.empty and 'timestamp_parsed' in rtk_curve_df.columns:
         rtk_curve_df = rtk_curve_df.sort_values('timestamp_parsed').reset_index(drop=True)
         rtk_columns = [
-            quantities_config.get(quantity, {}).get('rtk_col', '').replace('rtk_', '', 1)
+            quantities_config.get(quantity, {}).get(
+                'rtk_curve_col',
+                quantities_config.get(quantity, {}).get('rtk_col', '').replace('rtk_', '', 1),
+            )
             for quantity in selected_quantities
         ]
-        rtk_display_indices = _select_display_indices(rtk_curve_df, rtk_columns)
-        rtk_curve_df = rtk_curve_df.iloc[rtk_display_indices].reset_index(drop=True)
-        rtk_curve_timestamps = (rtk_curve_df['timestamp_parsed'] - t0).to_numpy(dtype=float)
-        rtk_curve_time_labels = _fmt_ts_vec(rtk_curve_df['timestamp_parsed'].values)
+        if not rtk_curve_df.empty:
+            rtk_display_indices = _select_display_indices(rtk_curve_df, rtk_columns)
+            rtk_curve_df = rtk_curve_df.iloc[rtk_display_indices].reset_index(drop=True)
+            rtk_curve_timestamps = rtk_curve_df['timestamp_parsed'].to_numpy(dtype=float) * 1000.0
+            rtk_curve_time_labels = _fmt_ts_vec(rtk_curve_df['timestamp_parsed'].values)
 
     gap_factor = get('comparison', {}).get('radar_gap_break_factor', 2.5)
 
@@ -428,26 +616,38 @@ def build_comparison_subplots(
         if chart_type == 'overlay':
             radar_col = qty_info.get('radar_col', '')
             rtk_col = qty_info.get('rtk_col', '')
-            rtk_source_col = rtk_col.replace('rtk_', '', 1)
+            rtk_source_col = qty_info.get('rtk_curve_col', rtk_col.replace('rtk_', '', 1))
             continuous_rtk_y = (
                 rtk_curve_df[rtk_source_col]
                 if rtk_curve_df is not None and rtk_source_col in rtk_curve_df.columns else None
             )
             _build_overlay_subplot(
                 fig, row, timestamps,
-                aligned_df[radar_col] if radar_col in aligned_df.columns else [],
-                aligned_df[rtk_col] if rtk_col in aligned_df.columns else [],
+                # 缺少一侧列表示用户明确选择单线显示；传入等长 NaN，
+                # 让子图构建器区分“该侧未选”与长度不一致的数据错误。
+                aligned_df[radar_col] if radar_col in aligned_df.columns else np.full(len(aligned_df), np.nan),
+                aligned_df[rtk_col] if rtk_col in aligned_df.columns else np.full(len(aligned_df), np.nan),
                 qty_label, qty_unit, i, legend_shapes,
                 radar_time_labels,
                 rtk_time_labels,
-                radar_name='radar',
-                rtk_name='RTK',
-                rtk_source=rtk_source_col if rtk_col else 'RTK',
+                radar_name=qty_info.get('radar_source_label', '雷达'),
+                rtk_name=qty_info.get('rtk_source_label', '真值'),
+                rtk_source=qty_info.get('rtk_label', rtk_source_col if rtk_col else 'RTK'),
                 rtk_curve_timestamps=rtk_curve_timestamps,
                 rtk_curve_y=continuous_rtk_y,
                 rtk_curve_time_labels=rtk_curve_time_labels,
                 gap_factor=gap_factor,
+                true_gap_start_times=true_gap_start_times,
+                show_difference=qty_info.get('show_difference', True),
+                radar_unit=qty_info.get('radar_unit'),
+                rtk_unit=qty_info.get('rtk_unit'),
             )
+            # 误差不合格帧高亮：仅标记点，不新增曲线，保持双曲线原始形态
+            perf_result = (perf_results or {}).get(qty_label)
+            if isinstance(perf_result, dict) and perf_result.get('frames') is not None:
+                _add_fail_highlights(
+                    fig, row, timestamps, perf_result['frames'],
+                )
 
         elif chart_type == 'error':
             field = qty_info.get('field', '')
@@ -460,7 +660,7 @@ def build_comparison_subplots(
         elif chart_type == 'scatter':
             field = qty_info.get('field', '')
             threshold = qty_info.get('threshold')
-            color = _COLORS[i % len(_COLORS)]
+            color = COLORS[i % len(COLORS)]
             if threshold is not None:
                 fig.add_hline(y=threshold, line_dash='dash', line_color='#f59e0b',
                               line_width=1.5, row=row, col=1,
@@ -489,14 +689,16 @@ def build_comparison_subplots(
 
     # X轴标题（仅最底行）+ spike 跨图同步竖线
     fig.update_xaxes(
-        tickformat='.0f',
+        type='date',
+        tickformat='%H:%M:%S',
+        hoverformat='%Y-%m-%d %H:%M:%S.%L',
         showspikes=True,
         spikemode='across',
         spikethickness=1,
         spikecolor='#94a3b8',
         spikedash='dot',
     )
-    fig.update_xaxes(title_text='时间 (s)', row=n, col=1)
+    fig.update_xaxes(title_text='时间戳', row=n, col=1)
 
     fig.update_layout(
         title='',
@@ -507,53 +709,5 @@ def build_comparison_subplots(
         shapes=legend_shapes,
     )
 
-    return _wrap_with_resampler(fig, len(aligned_df))
-
-
-def build_delay_curve_chart(delay_results: dict) -> go.Figure:
-    """构建延迟扫描曲线。
-
-    Args:
-        delay_results: scan_delay 返回的结果。
-
-    Returns:
-        Plotly Figure。
-    """
-    curve = delay_results.get('delay_curve', [])
-    if not curve:
-        fig = go.Figure()
-        fig.update_layout(title='无延迟数据', template='plotly_white')
-        return fig
-
-    delays = [d for d, _ in curve]
-    rmses = [r for _, r in curve]
-    best_ms = delay_results.get('optimal_delay_ms', 0)
-    best_rmse = delay_results.get('min_rmse', 0)
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=delays, y=rmses,
-        mode='lines+markers',
-        name='RMSE',
-        line=dict(color='#2563eb', width=2),
-        marker=dict(size=5),
-        hovertemplate='延迟: %{x}ms<br>RMSE: %{y:.4f}m<extra></extra>',
-    ))
-
-    # 无候选满足覆盖率门槛时不绘制伪“最优”延迟线。
-    if best_rmse is not None:
-        fig.add_vline(x=best_ms, line_dash='dash', line_color='#dc2626',
-                      line_width=1.5,
-                      annotation_text=f'{best_ms}ms<br>RMSE={best_rmse}m',
-                      annotation_font=dict(size=10, color='#dc2626'))
-
-    fig.update_layout(
-        title='RMSE vs 时间延迟',
-        xaxis_title='延迟 (ms)',
-        yaxis_title='RMSE (m)',
-        template='plotly_white',
-        hovermode='x unified',
-        margin=dict(l=50, r=20, t=40, b=40),
-    )
-
-    return fig
+    curve_points = len(rtk_curve_df) if rtk_curve_df is not None else 0
+    return _wrap_with_resampler(fig, max(len(aligned_df), curve_points))

@@ -7,12 +7,13 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-try:
-    from ..config import get
-except ImportError:
-    from config import get  # type: ignore[no-redef]
+from ..config import get
 
 logger = logging.getLogger(__name__)
+
+# 首帧距离统计的距离类物理量（与 config quantities 中的列名一致；
+# CSV 原生使用这些列名，JSON 链路经 json_loader 规范化为同名）。
+_FIRST_FRAME_DISTANCE_COLUMNS = ['Dx', 'Dy', 'Rx_front', 'Rx_rear', 'Ry']
 
 
 def calc_frame_diff(
@@ -208,7 +209,8 @@ def compute_fluctuation_stats(
     """计算跨维度波动指标（不受当前选中物理量影响）。
 
     返回指标：
-      - dx_max_dist: 最远检出距离 = max(|Dx|)，始终使用全段数据
+      - first_frame_dists: 各距离量首帧距离 = 目标起批（段首帧）时的绝对值，
+                           键为 Dx/Dy/Rx_front/Rx_rear/Ry，始终使用全段数据
       - dx_wave:     Dx 帧间差分标准差
       - dy_wave:     Dy 帧间差分标准差
       - vx_wave:     Vx 帧间差分标准差
@@ -230,11 +232,19 @@ def compute_fluctuation_stats(
 
     result: dict = {}
 
-    # 最远检出距离（始终用全段 Dx，不受框选影响）
-    if 'Dx' in seg_df.columns and len(seg_df) > 0:
-        result['dx_max_dist'] = float(np.max(np.abs(seg_df['Dx'].values.astype(float))))
-    else:
-        result['dx_max_dist'] = None
+    # 首帧距离 = 目标起批（段首帧）时各距离量的绝对值（始终用全段数据，
+    # 不受框选影响）。CSV 与 JSON 链路均经 _preprocess_csv 按时间升序排序，
+    # 段首帧即数据文件中的首帧；雷达检出能力以目标首次被检出时的距离衡量，
+    # 目标通常越走越近，全段 max() 反映的是轨迹瞬时峰值而非检出距离。
+    first_frame_dists: dict = {}
+    for col in _FIRST_FRAME_DISTANCE_COLUMNS:
+        if col in seg_df.columns and len(seg_df) > 0:
+            vals = seg_df[col].values.astype(float)
+            valid = vals[~np.isnan(vals)]
+            first_frame_dists[col] = float(np.abs(valid[0])) if len(valid) else None
+        else:
+            first_frame_dists[col] = None
+    result['first_frame_dists'] = first_frame_dists
 
     # 各维度波动 = 帧间差分标准差
     dims = [

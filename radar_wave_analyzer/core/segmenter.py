@@ -16,15 +16,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-try:
-    from ..config import get
-except ImportError:
-    from config import get  # type: ignore[no-redef]
+from ..config import get
 
-try:
-    from .data_loader import parse_timestamp
-except ImportError:
-    from core.data_loader import parse_timestamp  # type: ignore[no-redef]
+from .data_loader import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +143,17 @@ def _detect_lifecycle_breaks(
     return sorted(set(breaks))
 
 
-def _segment_max_speed(seg_df: pd.DataFrame, pos_cols: list[str]) -> Optional[float]:
-    """计算段内最大帧间速度（m/s）。位置列缺失或不足两帧返回 None。"""
+def _segment_spatial_extremes(
+    seg_df: pd.DataFrame,
+    pos_cols: list[str],
+) -> Optional[tuple[float, float]]:
+    """扫描段内帧间位移与速度的最大值，返回 ``(max_dist_m, max_speed_mps)``。
+
+    位移与速度分开统计：位移不依赖 Δt，因此 Δt=0（同时间戳复用）的瞬移同样
+    能被捕获；速度仅在 Δt>0 时计算，避免除零。
+
+    位置列缺失或不足两帧返回 None。
+    """
     if not pos_cols or len(seg_df) < 2:
         return None
     if not all(c in seg_df.columns for c in pos_cols):
@@ -159,18 +162,22 @@ def _segment_max_speed(seg_df: pd.DataFrame, pos_cols: list[str]) -> Optional[fl
     ts_col = 'timestamp_parsed' if 'timestamp_parsed' in seg_df.columns else 'timestamp'
     ts = pd.to_datetime(seg_df[ts_col])
     ts_ms = pd.Series(ts).diff().dt.total_seconds() * 1000
-    max_s = 0.0
+    max_dist = 0.0
+    max_speed = 0.0
     for i in range(1, len(pos)):
         if np.any(np.isnan(pos[i])) or np.any(np.isnan(pos[i - 1])):
             continue
+        # 位移与 Δt 无关：Δt=0 的瞬移同样计入
+        dist = float(np.sqrt(np.sum((pos[i] - pos[i - 1]) ** 2)))
+        if dist > max_dist:
+            max_dist = dist
         dt = ts_ms.iloc[i]
         if pd.isna(dt) or dt <= 0:
             continue
-        dist = float(np.sqrt(np.sum((pos[i] - pos[i - 1]) ** 2)))
         speed = dist / (dt / 1000.0)
-        if speed > max_s:
-            max_s = speed
-    return max_s if max_s > 0 else 0.0
+        if speed > max_speed:
+            max_speed = speed
+    return max_dist, max_speed
 
 
 def _unwrap_track_age(
@@ -222,6 +229,7 @@ def _make_segment_dict(
     unwrapped: np.ndarray,
     is_abnormal: bool,
     spatial_anomaly: bool = False,
+    timestamp_position_conflict: bool = False,
 ) -> dict:
     """构造单个轨迹段的元信息字典。消除 3 处分段构造处的重复。"""
     n = len(sub_df)
@@ -238,6 +246,7 @@ def _make_segment_dict(
         'num_wraps': len(wraps),
         'is_abnormal': is_abnormal,
         'spatial_anomaly': spatial_anomaly,
+        'timestamp_position_conflict': timestamp_position_conflict,
     }
     for column in (
         'radar_source_key', 'radar_source_label', 'radar_source_short_label',
@@ -379,11 +388,37 @@ def segment_trajectories(
                 return f'{safe_source}{group_suffix}__{id_val}_seg{number}'
             return f'{id_val}_seg{number}'
 
-        def _seg_spatial_anomaly(seg_df: pd.DataFrame) -> bool:
-            if not available_pos_cols:
-                return False
-            ms = _segment_max_speed(seg_df, available_pos_cols)
-            return ms is not None and ms > max_track_speed
+        def _seg_spatial_flags(seg_df: pd.DataFrame) -> tuple[bool, bool]:
+            """分别判定时序空间跳变与同时间戳位置冲突。
+
+            Δt>0 时，位移或速度超阈值记为普通空间跳变；Δt=0 时不计算速度，
+            位移超阈值单独记为“同时间戳位置冲突”，不再混入 spatial_anomaly。
+            """
+            if not available_pos_cols or len(seg_df) < 2:
+                return False, False
+            pos = seg_df[available_pos_cols].to_numpy(dtype=float)
+            ts = pd.to_datetime(seg_df['timestamp_parsed'])
+            time_diffs = pd.Series(ts).diff().dt.total_seconds().to_numpy(dtype=float)
+            spatial_anomaly = False
+            timestamp_conflict = False
+            for i in range(1, len(pos)):
+                if np.any(np.isnan(pos[i])) or np.any(np.isnan(pos[i - 1])):
+                    continue
+                dist = float(np.sqrt(np.sum((pos[i] - pos[i - 1]) ** 2)))
+                dt = time_diffs[i]
+                if np.isnan(dt) or dt < 0:
+                    continue
+                if dt == 0:
+                    timestamp_conflict |= dist > pos_jump_threshold
+                else:
+                    speed = dist / dt
+                    spatial_anomaly |= (
+                        dist > pos_jump_threshold or speed > max_track_speed
+                    )
+            return spatial_anomaly, timestamp_conflict
+
+        # 组内段先本地收集，切分完成后统一做孤立帧剔除，再并入全局结果。
+        local_segments: list[tuple[dict, pd.DataFrame]] = []
 
         if len(seg_breaks) == 0:
             # 无断点 → 单条轨迹
@@ -392,11 +427,13 @@ def segment_trajectories(
 
             unwrapped = _unwrap_track_age(ages, wraps)
             is_abnormal = not _check_unwrapped_monotonicity(unwrapped)
-            spatial_anomaly = _seg_spatial_anomaly(sub)
+            spatial_anomaly, timestamp_conflict = _seg_spatial_flags(sub)
 
-            segment = _make_segment_dict(traj_id, id_val, sub, ages, wraps, unwrapped, is_abnormal, spatial_anomaly)
-            all_segments.append(segment)
-            segments_dict[traj_id] = sub.copy()
+            segment = _make_segment_dict(
+                traj_id, id_val, sub, ages, wraps, unwrapped, is_abnormal,
+                spatial_anomaly, timestamp_conflict,
+            )
+            local_segments.append((segment, sub.copy()))
         else:
             # 有断点 → 按断点切分
             start_idx = 0
@@ -412,11 +449,13 @@ def segment_trajectories(
 
                 unwrapped = _unwrap_track_age(seg_ages, seg_wraps)
                 is_abnormal = not _check_unwrapped_monotonicity(unwrapped)
-                spatial_anomaly = _seg_spatial_anomaly(seg_sub)
+                spatial_anomaly, timestamp_conflict = _seg_spatial_flags(seg_sub)
 
-                segment = _make_segment_dict(traj_id, id_val, seg_sub, seg_ages, seg_wraps, unwrapped, is_abnormal, spatial_anomaly)
-                all_segments.append(segment)
-                segments_dict[traj_id] = seg_sub
+                segment = _make_segment_dict(
+                    traj_id, id_val, seg_sub, seg_ages, seg_wraps, unwrapped,
+                    is_abnormal, spatial_anomaly, timestamp_conflict,
+                )
+                local_segments.append((segment, seg_sub))
 
                 start_idx = break_idx
 
@@ -430,11 +469,40 @@ def segment_trajectories(
 
             unwrapped = _unwrap_track_age(seg_ages, seg_wraps)
             is_abnormal = not _check_unwrapped_monotonicity(unwrapped)
-            spatial_anomaly = _seg_spatial_anomaly(seg_sub)
+            spatial_anomaly, timestamp_conflict = _seg_spatial_flags(seg_sub)
 
-            segment = _make_segment_dict(traj_id, id_val, seg_sub, seg_ages, seg_wraps, unwrapped, is_abnormal, spatial_anomaly)
-            all_segments.append(segment)
-            segments_dict[traj_id] = seg_sub
+            segment = _make_segment_dict(
+                traj_id, id_val, seg_sub, seg_ages, seg_wraps, unwrapped,
+                is_abnormal, spatial_anomaly, timestamp_conflict,
+            )
+            local_segments.append((segment, seg_sub))
+
+        # ---- 孤立单帧段剔除 ----
+        # 切分规则（C/D/F/G/E）命中数据毛刺帧时会切出仅含 1 帧的碎片段：
+        # 典型如采集启动残留的异常首帧（Track_Age 倒挂 + 时间孤立）。
+        # 单帧段无法参与波动分析，组内存在其他段时视为切分毛刺予以剔除；
+        # 整组仅 1 帧时保留（走 insufficient_samples 标记路径）。
+        if (get('REMOVE_ISOLATED_SINGLE_FRAMES', True)
+                and len(local_segments) > 1):
+            kept = [(seg_meta, seg_df) for seg_meta, seg_df in local_segments
+                    if seg_meta['total_frames'] > 1]
+            removed = len(local_segments) - len(kept)
+            if removed:
+                logger.warning(
+                    '剔除 %d 个孤立单帧段（ID=%s，疑似 Track_Age/时间戳异常帧）',
+                    removed, id_val,
+                )
+                local_segments = kept
+                # 重编号保持段序号连续，避免 UI 出现 seg1 缺号
+                renumbered: list[tuple[dict, pd.DataFrame]] = []
+                for number, (seg_meta, seg_df) in enumerate(local_segments, start=1):
+                    seg_meta['trajectory_id'] = _trajectory_id(number)
+                    renumbered.append((seg_meta, seg_df))
+                local_segments = renumbered
+
+        for seg_meta, seg_df in local_segments:
+            all_segments.append(seg_meta)
+            segments_dict[seg_meta['trajectory_id']] = seg_df
 
     meta_df = pd.DataFrame(all_segments)
 
@@ -454,10 +522,17 @@ def segment_trajectories(
         meta_df['display_label'] = meta_df.apply(_fmt_label, axis=1)
         meta_df['insufficient_samples'] = meta_df['total_frames'] < min_traj_frames
 
+    # 所有段被过滤/剔除时（例如数据全为孤立帧）meta_df 为空，
+    # 此时 is_abnormal 等派生列尚未创建，直接统计会抛 KeyError。
+    if len(meta_df) == 0:
+        logger.warning('分段完成: 0 段（全部样本被过滤或作为孤立帧剔除）')
+        return meta_df, segments_dict
+
     logger.info(
         f'分段完成: {len(meta_df)} 段, '
         f'异常段 {meta_df["is_abnormal"].sum()}, '
         f'空间跳变段 {meta_df["spatial_anomaly"].sum()}, '
+        f'同时间戳位置冲突段 {meta_df["timestamp_position_conflict"].sum()}, '
         f'样本不足 {meta_df["insufficient_samples"].sum()}'
     )
     return meta_df, segments_dict

@@ -8,10 +8,7 @@ import dash
 import dash_bootstrap_components as dbc
 from flask_caching import Cache
 
-try:
-    from .config import get, _get_base_dir
-except ImportError:
-    from config import get, _get_base_dir  # type: ignore[no-redef]
+from .config import get, _get_base_dir
 
 LOCAL_BOOTSTRAP = '/assets/bootstrap.min.css'
 

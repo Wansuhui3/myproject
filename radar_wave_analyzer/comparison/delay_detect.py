@@ -70,41 +70,6 @@ def _compute_delay_metrics_arrays(
     }
 
 
-def _compute_rmse_for_delay(
-    radar_df: pd.DataFrame,
-    rtk_df: pd.DataFrame,
-    track_id: int,
-    delay_sec: float,
-    match_threshold_m: float = 5.0,
-    file_index: int = None,
-) -> float:
-    """对给定延迟值，计算雷达与RTK插值后的位置RMSE（仅含空间门控匹配的帧）。
-
-    Args:
-        delay_sec: 延迟值(秒)，正=RTK比雷达晚。
-        match_threshold_m: 空间匹配阈值(米)，用于门控后再算RMSE。
-        file_index: 可选，来源文件序号。多文件场景下用于过滤同ID不同时间段的数据。
-    """
-    return _compute_delay_metrics(
-        radar_df, rtk_df, track_id, delay_sec,
-        match_threshold_m=match_threshold_m,
-        file_index=file_index,
-    )['rmse']
-
-
-def _compute_delay_metrics(
-    radar_df: pd.DataFrame,
-    rtk_df: pd.DataFrame,
-    track_id: int,
-    delay_sec: float,
-    match_threshold_m: float = 5.0,
-    file_index: int = None,
-) -> dict:
-    """计算一个延迟候选的 RMSE 和有效样本覆盖率。"""
-    arrays = _prepare_delay_arrays(radar_df, rtk_df, track_id, file_index)
-    return _compute_delay_metrics_arrays(arrays, delay_sec, match_threshold_m)
-
-
 def scan_delay(
     radar_df: pd.DataFrame,
     rtk_df: pd.DataFrame,
@@ -121,7 +86,7 @@ def scan_delay(
 
     算法（来自文档 Step⑥）:
         对于 d ∈ [d_min, d_max], 步长 step_ms (毫秒):
-        1. 雷达时间戳偏移 d/1000 秒
+        1. 雷达时间戳向后偏移 d/1000 秒（d>0）；d<0 时向前偏移
         2. 对RTK做线性插值
         3. 计算 RMSE(d)
         最优延迟 d_opt = argmin(RMSE)
@@ -145,6 +110,7 @@ def scan_delay(
             delay_samples: 每个候选延迟的 RMSE、匹配帧数和覆盖率。
             delay_insensitive: 延迟是否不敏感
             recommendation: 建议描述
+            baseline/optimal: 0ms 与最优候选的 RMSE、匹配帧数及匹配率
     """
     d_min, d_max = delay_range
     delays_ms = list(range(d_min, d_max + 1, step_ms))
@@ -153,6 +119,16 @@ def scan_delay(
     delay_samples = []
 
     arrays = _prepare_delay_arrays(radar_df, rtk_df, track_id, file_index)
+    # 共同时间样本：扫描范围内所有候选延迟都能落在 RTK 覆盖区间内。
+    # 延迟之间使用同一批样本计算 fixed_rmse，避免 argmin 通过减少样本数获胜。
+    radar_ts = arrays['radar_ts']
+    rtk_ts = arrays['rtk_ts']
+    common_mask = np.zeros(len(radar_ts), dtype=bool)
+    if len(rtk_ts):
+        common_mask = (
+            (radar_ts + d_min / 1000.0 >= rtk_ts[0])
+            & (radar_ts + d_max / 1000.0 <= rtk_ts[-1])
+        )
     for d_ms in delays_ms:
         metrics = _compute_delay_metrics_arrays(
             arrays, d_ms / 1000.0, match_threshold_m,
@@ -163,23 +139,44 @@ def scan_delay(
             and metrics['match_rate'] >= min_match_rate
         )
         rounded_rmse = round(metrics['rmse'], 5) if np.isfinite(metrics['rmse']) else None
-        curve.append((d_ms, rounded_rmse))
+        fixed_rmse = None
+        fixed_frames = 0
+        if common_mask.any():
+            compensated = radar_ts[common_mask] + d_ms / 1000.0
+            fixed_x = np.interp(compensated, rtk_ts, arrays['rtk_x'])
+            fixed_y = np.interp(compensated, rtk_ts, arrays['rtk_y'])
+            fixed_dist = np.hypot(
+                arrays['radar_x'][common_mask] - fixed_x,
+                arrays['radar_y'][common_mask] - fixed_y,
+            )
+            finite = np.isfinite(fixed_dist)
+            fixed_frames = int(finite.sum())
+            if fixed_frames:
+                fixed_rmse = round(float(np.sqrt(np.mean(fixed_dist[finite] ** 2))), 5)
+        # 主曲线改为固定样本 RMSE；旧的门控曲线保留供诊断。
+        curve.append((d_ms, fixed_rmse))
         delay_samples.append({
             'delay_ms': d_ms,
             'rmse': rounded_rmse,
+            'gated_rmse': rounded_rmse,
+            'fixed_rmse': fixed_rmse,
+            'fixed_frames': fixed_frames,
             'matched_frames': metrics['matched_frames'],
             'total_frames': metrics['total_frames'],
             'match_rate': round(metrics['match_rate'], 4),
             'eligible': eligible,
         })
-        if eligible:
-            eligible_metrics.append((d_ms, metrics['rmse']))
+        if eligible and fixed_rmse is not None:
+            eligible_metrics.append((d_ms, fixed_rmse))
 
     if not eligible_metrics:
         return {
             'optimal_delay_ms': 0,
             'min_rmse': None,
             'delay_curve': curve,
+            'gated_delay_curve': [
+                (item['delay_ms'], item['gated_rmse']) for item in delay_samples
+            ],
             'delay_samples': delay_samples,
             'delay_insensitive': True,
             'recommendation': (
@@ -187,6 +184,9 @@ def scan_delay(
                 f'{min_matched_frames} 帧且覆盖率不低于 {min_match_rate:.0%}）'
             ),
             'level': 'insufficient_coverage',
+            'baseline': next((item for item in delay_samples
+                              if item['delay_ms'] == 0), None),
+            'optimal': None,
         }
 
     eligible_delays = [delay for delay, _ in eligible_metrics]
@@ -211,12 +211,21 @@ def scan_delay(
         recommendation = f'建议补偿延迟 {optimal_delay_ms}ms（RMSE={min_rmse:.2f}m）'
         level = 'need_compensation'
 
+    baseline = next((item for item in delay_samples if item['delay_ms'] == 0), None)
+    optimal = next((item for item in delay_samples
+                    if item['delay_ms'] == optimal_delay_ms), None)
+
     return {
         'optimal_delay_ms': optimal_delay_ms,
         'min_rmse': min_rmse,
         'delay_curve': curve,
+        'gated_delay_curve': [
+            (item['delay_ms'], item['gated_rmse']) for item in delay_samples
+        ],
         'delay_samples': delay_samples,
         'delay_insensitive': delay_insensitive,
         'recommendation': recommendation,
         'level': level,
+        'baseline': baseline,
+        'optimal': optimal,
     }

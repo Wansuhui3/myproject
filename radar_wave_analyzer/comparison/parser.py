@@ -1,20 +1,21 @@
 """
 文件解析与角色识别模块。
-自动识别雷达CSV和RTK真值CSV，解析时间戳，校验数据完整性。
+自动识别雷达CSV/JSON和RTK真值CSV，解析时间戳，校验数据完整性。
 """
 import io
+import os
 import re
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
+from ..core.data_loader import parse_epoch_series
+from ..core.json_loader import is_json_filename, parse_json_topics
+
 # 时间戳正则：YYYY_MM_DD_HH_MM_SS_mmm 或 YYYY_MM_DD_HH_MM_SS
 _RE_TS_7 = re.compile(r'^(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{3})$')
 _RE_TS_6 = re.compile(r'^(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})$')
-
-# 基准 epoch
-_EPOCH = datetime(1970, 1, 1)
 
 # 雷达特征列
 _RADAR_COLS = {'Dx', 'Dy'}
@@ -32,6 +33,48 @@ _NUMERIC_COLUMNS = {
     'rtk': ['center_x', 'center_y', 'Vx', 'Vy'],
     'unknown': [],
 }
+
+_SYSTEM_COLUMNS = {'timestamp', 'ID', 'Track_Age'}
+
+
+def _infer_field_unit(field_name: str, internal_name: str) -> str:
+    """根据原始/标准字段名推测单位；无法可靠判断时返回空字符串。"""
+    token = internal_name.lower().replace(' ', '').replace('_', '')
+    original = field_name.lower().replace(' ', '').replace('_', '')
+    if token in {'dx', 'dy', 'centerx', 'centery', 'rxfront', 'rxrear', 'ry'}:
+        return 'm'
+    if token in {'vx', 'vy', 'vabs'} or 'speed' in original or 'velocity' in original:
+        return 'm/s'
+    if token in {'ax', 'ay'} or original in {'acceleration', 'accel'}:
+        return 'm/s²'
+    if 'angle' in token or 'heading' in token or 'yaw' in token:
+        return '°'
+    return ''
+
+
+def _build_physical_fields(
+    df: pd.DataFrame,
+    original_fields: list[str],
+    original_to_internal: dict[str, str],
+) -> list[dict]:
+    """生成保持 CSV 原名的可选数值物理量元数据。"""
+    fields = []
+    for field in original_fields:
+        internal = original_to_internal.get(field, field)
+        if internal in _SYSTEM_COLUMNS or field not in df.columns:
+            continue
+        numeric = pd.to_numeric(df[field], errors='coerce')
+        valid_count = int(np.isfinite(numeric).sum())
+        if valid_count == 0:
+            continue
+        fields.append({
+            'name': field,
+            'internal_name': internal,
+            'unit': _infer_field_unit(field, internal),
+            'valid_count': valid_count,
+            'valid_ratio': round(valid_count / len(df), 4) if len(df) else 0.0,
+        })
+    return fields
 
 
 def detect_file_role(df: pd.DataFrame) -> str:
@@ -53,8 +96,33 @@ def detect_file_role(df: pd.DataFrame) -> str:
     return 'unknown'
 
 
+def _wallclock_tz():
+    """下划线墙钟时间戳所属时区：系统本地时区。
+
+    设备 CSV 的时间戳是本地墙钟（如北京时间 16:42:13），而录制 JSON 的
+    epoch 纳秒是真实 UTC。若把墙钟直接当 UTC 相减，两类文件相差整个时区
+    偏移（北京时间即 8 小时），时间零重叠导致目标关联失败。CSV↔CSV 比较
+    时双方同步折算，相对时间关系不受影响。
+    """
+    return datetime.now().astimezone().tzinfo
+
+
+def _wallclock_epoch(dt: datetime) -> float:
+    """naive 墙钟 datetime → 真实 UTC epoch 秒（按系统时区折算）。"""
+    return dt.replace(tzinfo=_wallclock_tz()).timestamp()
+
+
+def _naive_to_epoch_seconds(timestamps: pd.Series) -> pd.Series:
+    """naive 墙钟时间序列 → 真实 UTC epoch 秒（向量化路径）。"""
+    tz = _wallclock_tz()
+    localized = timestamps.dt.tz_localize(
+        tz, ambiguous=True, nonexistent='shift_forward',
+    )
+    return (localized - pd.Timestamp('1970-01-01', tz='UTC')) / pd.Timedelta(seconds=1)
+
+
 def parse_timestamp(ts_str: str) -> float:
-    """解析下划线分隔时间戳字符串，返回 epoch 秒。
+    """解析下划线分隔时间戳字符串，返回真实 UTC epoch 秒。
 
     支持格式:
       YYYY_MM_DD_HH_MM_SS_mmm (7段，含毫秒)
@@ -68,21 +136,25 @@ def parse_timestamp(ts_str: str) -> float:
         parts = [int(x) for x in m.groups()]
         dt = datetime(parts[0], parts[1], parts[2],
                       parts[3], parts[4], parts[5])
-        return (dt - _EPOCH).total_seconds() + parts[6] / 1000.0
+        return _wallclock_epoch(dt) + parts[6] / 1000.0
     m = _RE_TS_6.match(s)
     if m:
         parts = [int(x) for x in m.groups()]
-        dt = datetime(*parts)
-        return (dt - _EPOCH).total_seconds()
+        return _wallclock_epoch(datetime(*parts))
     # 兜底：尝试 pandas 解析
     try:
-        return pd.Timestamp(s).timestamp()
+        ts = pd.Timestamp(s)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize(
+                _wallclock_tz(), ambiguous=True, nonexistent='shift_forward',
+            )
+        return ts.timestamp()
     except Exception:
         raise ValueError(f'无法解析时间戳: {ts_str!r}')
 
 
 def parse_timestamp_series(values: pd.Series) -> pd.Series:
-    """批量解析时间戳并返回 epoch 秒。
+    """批量解析时间戳并返回真实 UTC epoch 秒。
 
     设备主流的 6/7 段下划线格式走 Pandas 向量化路径；只有少量历史格式
     回退到单值解析器，避免大文件逐行执行 Python ``apply``。
@@ -95,22 +167,14 @@ def parse_timestamp_series(values: pd.Series) -> pd.Series:
         timestamps = pd.to_datetime(
             raw.loc[seven_mask], format='%Y_%m_%d_%H_%M_%S_%f', errors='coerce',
         )
-        valid = timestamps.notna()
-        parsed.loc[timestamps.index[valid]] = (
-            (timestamps.loc[valid] - pd.Timestamp('1970-01-01'))
-            / pd.Timedelta(seconds=1)
-        )
+        parsed.loc[timestamps.index] = _naive_to_epoch_seconds(timestamps)
 
     six_mask = raw.str.fullmatch(r'\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2}')
     if six_mask.any():
         timestamps = pd.to_datetime(
             raw.loc[six_mask], format='%Y_%m_%d_%H_%M_%S', errors='coerce',
         )
-        valid = timestamps.notna()
-        parsed.loc[timestamps.index[valid]] = (
-            (timestamps.loc[valid] - pd.Timestamp('1970-01-01'))
-            / pd.Timedelta(seconds=1)
-        )
+        parsed.loc[timestamps.index] = _naive_to_epoch_seconds(timestamps)
 
     fallback_mask = parsed.isna()
     if fallback_mask.any():
@@ -120,9 +184,10 @@ def parse_timestamp_series(values: pd.Series) -> pd.Series:
 
 def _compute_sample_rate(timestamps_sec: np.ndarray) -> float:
     """根据时间戳序列估算采样率(Hz)。"""
-    if len(timestamps_sec) < 2:
+    unique_timestamps = np.sort(np.unique(timestamps_sec))
+    if len(unique_timestamps) < 2:
         return 0.0
-    diffs = np.diff(np.sort(np.unique(timestamps_sec)))
+    diffs = np.diff(unique_timestamps)
     median_diff = np.median(diffs)
     if median_diff <= 0:
         return 0.0
@@ -242,12 +307,41 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
                 errors.append('无法读取CSV文件，请检查编码格式是否为 UTF-8 或 GBK')
                 return _make_error_result(filename, errors)
 
-    # 统一列名：先 strip 空格，再用映射表归一
+    # 保留 CSV 原始列名，并额外创建算法所需的标准别名。界面、图例和自定义
+    # 映射使用原始列名；目标发现、坐标诊断等既有算法继续使用标准字段。
     df = df.rename(columns=lambda c: str(c).strip())
-    df = df.rename(columns=lambda c: col_map.get(c, c))
+    original_fields = list(df.columns)
+    original_to_internal = {field: col_map.get(field, field) for field in original_fields}
+    for original, internal in original_to_internal.items():
+        if original != internal and internal not in df.columns:
+            df[internal] = df[original]
 
+    try:
+        timestamps_sec = parse_timestamp_series(df['timestamp'])
+    except Exception as e:
+        errors.append(f'时间戳解析失败: {e}')
+        timestamps_sec = pd.Series(0.0, index=df.index)
+
+    return _finalize_role_result(
+        df, filename, errors, warnings, original_fields, original_to_internal, timestamps_sec,
+    )
+
+
+def _finalize_role_result(
+    df: pd.DataFrame,
+    filename: str,
+    errors: list[str],
+    warnings: list[str],
+    original_fields: list[str],
+    original_to_internal: dict[str, str],
+    timestamps_sec: pd.Series,
+) -> dict:
+    """角色检测、必需列校验、数值清洗、排序与指标组装（CSV/JSON 共用后处理）。
+
+    timestamps_sec 为已换算的 epoch 秒序列（与对比模块时间口径一致）。
+    """
     role = detect_file_role(df)
-    fields = list(df.columns)
+    fields = original_fields
 
     # 对齐算法会直接使用位置与速度字段，必须在上传阶段给出中文错误，
     # 而不是在后续 NumPy 插值时暴露 KeyError/类型错误。
@@ -280,17 +374,18 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
         if len(df) == 0:
             errors.append('没有可用于对齐的有效数据行')
 
-    try:
-        timestamps = parse_timestamp_series(df['timestamp'])
-        df['timestamp_parsed'] = timestamps
-    except Exception as e:
-        errors.append(f'时间戳解析失败: {e}')
-        df['timestamp_parsed'] = 0.0
+    if not errors and timestamps_sec.isna().all():
+        errors.append('时间戳解析失败: 所有时间戳均为无效数值')
+        timestamps_sec = pd.Series(0.0, index=df.index)
+
+    df['timestamp_parsed'] = timestamps_sec.reindex(df.index)
 
     if not errors and len(df) > 0:
-        # 在排序前保留原始CSV行号（1-based），供后续帧号标注使用
+        # 在排序前保留原始行号（1-based），供后续帧号标注使用
         df['csv_row'] = range(1, len(df) + 1)
         df = df.sort_values('timestamp_parsed').reset_index(drop=True)
+
+    physical_fields = _build_physical_fields(df, original_fields, original_to_internal)
 
     ts_vals = df['timestamp_parsed'].values
 
@@ -304,9 +399,53 @@ def load_csv_file(file_bytes: bytes, filename: str) -> dict:
         'time_range': (ts_vals.min(), ts_vals.max()) if len(df) > 0 else (0, 0),
         'sample_rate_hz': _compute_sample_rate(ts_vals),
         'fields': fields,
+        'physical_fields': physical_fields,
+        'original_to_internal': original_to_internal,
         'errors': errors,
         'warnings': warnings,
     }
+
+
+def _epoch_seconds(values: pd.Series) -> pd.Series:
+    """数值 epoch（JSON）→ epoch 秒，复用 data_loader 唯一的量级判单位实现。"""
+    timestamps = parse_epoch_series(values)
+    return (timestamps - pd.Timestamp('1970-01-01')) / pd.Timedelta(seconds=1)
+
+
+def _load_json_topics(file_bytes: bytes, filename: str) -> list[dict]:
+    """加载目标 JSON：每个话题展开为独立结果（角色检测与 CSV 一致）。
+
+    使用 json_loader 的宽松展开层（仅要求 timestamp），Track_Age 等主页面
+    专用必需列不强制——RTK 真值 JSON 同样可经此处解析。列名已按 config
+    quantities 规范化（如 Rx_Front → Rx_front），恒等映射即可。
+    """
+    json_result = parse_json_topics(file_bytes, filename)
+    results: list[dict] = []
+    for error in json_result['errors']:
+        results.append(_make_error_result(filename, [error]))
+
+    for topic_index, entry in enumerate(json_result['topics']):
+        df = entry['df'].copy()
+        original_fields = list(df.columns)
+        original_to_internal = {field: field for field in original_fields}
+        timestamps_sec = _epoch_seconds(df['timestamp'])
+        # 空话题跳过等文件级提示挂到首个有效话题，避免丢失
+        topic_warnings = list(json_result['warnings']) if topic_index == 0 else []
+        results.append(_finalize_role_result(
+            df, entry['label'], [], topic_warnings, original_fields,
+            original_to_internal, timestamps_sec,
+        ))
+    return results
+
+
+def load_data_file(file_bytes: bytes, filename: str) -> list[dict]:
+    """统一数据文件入口：按扩展名分派 CSV / JSON，返回结果列表。
+
+    CSV 恒返回单元素列表；JSON 每话题一个元素（如 FLR/RLR 共存时拆为两条）。
+    """
+    if is_json_filename(filename):
+        return _load_json_topics(file_bytes, os.path.basename(str(filename or 'upload.json')))
+    return [load_csv_file(file_bytes, filename)]
 
 
 def validate_overlap(radar_info: dict, rtk_info: dict) -> dict:

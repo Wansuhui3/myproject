@@ -9,10 +9,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-try:
-    from ..config import get
-except ImportError:
-    from config import get  # type: ignore[no-redef]
+from ..config import get
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +145,38 @@ def parse_timestamp_series(values: pd.Series) -> pd.Series:
     return result
 
 
+def parse_epoch_series(values: pd.Series) -> pd.Series:
+    """解析数值型 epoch 时间戳（JSON 数据源），返回 datetime64[ns]。
+
+    单位按数值量级自动判定（依据中位数，避免个别异常值干扰）：
+      |值| >= 1e17 → 纳秒（如 1787018922641932400）
+      |值| >= 1e14 → 微秒
+      |值| >= 1e11 → 毫秒
+      其余        → 秒
+
+    与 ``parse_timestamp_series`` 并列为项目仅有的两个批量时间戳解析入口，
+    禁止在其他位置另行实现 epoch 换算。
+    """
+    numeric = pd.to_numeric(values, errors='coerce')
+    result = pd.Series(pd.NaT, index=values.index, dtype='datetime64[ns]')
+    valid = numeric.notna()
+    if not valid.any():
+        return result
+
+    median_scale = numeric[valid].abs().median()
+    if median_scale >= 1e17:
+        unit = 'ns'
+    elif median_scale >= 1e14:
+        unit = 'us'
+    elif median_scale >= 1e11:
+        unit = 'ms'
+    else:
+        unit = 's'
+
+    result.loc[valid] = pd.to_datetime(numeric[valid], unit=unit)
+    return result
+
+
 def _read_and_preprocess_csv(source, chunk_size: Optional[int] = None) -> pd.DataFrame:
     """读取 CSV；分块模式下逐块清洗，最后仍按全局时间排序。"""
     if not chunk_size:
@@ -225,10 +254,17 @@ def load_csv_from_bytes(
     return df
 
 
-def _preprocess_csv(df: pd.DataFrame, sort_by_time: bool = True) -> pd.DataFrame:
+def _preprocess_csv(
+    df: pd.DataFrame,
+    sort_by_time: bool = True,
+    epoch_timestamps: bool = False,
+) -> pd.DataFrame:
     """
-    CSV 预处理核心逻辑：校验 → 清洗 → 排序。
-    load_csv 和 load_csv_from_bytes 共用此函数。
+    数据预处理核心逻辑：校验 → 清洗 → 排序。
+    load_csv / load_csv_from_bytes / json_loader 共用此函数。
+
+    epoch_timestamps=True 时 timestamp 列为数值型 epoch（JSON 数据源），
+    走 ``parse_epoch_series``；否则按 CSV 字符串格式解析。
     """
 
     # 检查必要字段
@@ -257,8 +293,11 @@ def _preprocess_csv(df: pd.DataFrame, sort_by_time: bool = True) -> pd.DataFrame
     # 在完成校验后再转换，保证 Track_Age 的语义始终是 uint8 整数。
     df['Track_Age'] = numeric_age.loc[df.index].astype('int64')
 
-    # 时间戳解析：主流设备格式走向量化路径，少量兼容格式自动回退。
-    df['timestamp_parsed'] = parse_timestamp_series(df['timestamp'])
+    # 时间戳解析：CSV 主流设备格式走字符串向量化路径，JSON 数值 epoch 走量级判单位路径。
+    if epoch_timestamps:
+        df['timestamp_parsed'] = parse_epoch_series(df['timestamp'])
+    else:
+        df['timestamp_parsed'] = parse_timestamp_series(df['timestamp'])
 
     if sort_by_time:
         return _finalize_preprocessed(df)

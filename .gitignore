@@ -9,13 +9,26 @@ venv/
 # ===== PyInstaller 构建产物 =====
 build/
 dist/
+release/
+.build-venv/
+*.zip
 
-# ===== 日志 =====
+# ===== 一次性调试 / 诊断 / 验证脚本 =====
+_debug_*.py
+_diag_*.py
+_verify*.py
+_run_build.py
+
+# ===== 构建与服务日志 =====
+*_err.txt
+svc_*.txt
 app.log
 *.log
 
 # ===== IDE / 工具数据 =====
 .codebuddy/
+.workbuddy/
+radar_wave_analyzer/.dbg/
 
 # ===== 系统文件 =====
 Thumbs.db

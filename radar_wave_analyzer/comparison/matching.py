@@ -132,13 +132,29 @@ def extract_radar_trajectory(
     file_index: int | None,
     segment_index: int | None,
     config: dict[str, Any] | None = None,
+    merge_segments: bool = False,
+    segment_indexes: list[int] | None = None,
 ) -> pd.DataFrame:
-    """提取一个确定的雷达 Track_Age 生命周期段，供诊断与最终对齐使用。"""
+    """提取一个确定的雷达 Track_Age 生命周期段，供诊断与最终对齐使用。
+
+    ``merge_segments=True`` 时合并段。若给定 ``segment_indexes``，严格只合并
+    被用户勾选的段；否则保留旧行为，合并该 (ID, 文件) 下全部生命周期段。
+    """
     cfg = _config(config)
+    requested_segments = {int(index) for index in segment_indexes or []}
+    matches: list[pd.DataFrame] = []
     for candidate_id, candidate_file, candidate_segment, segment in _radar_trajectory_groups(radar_df, cfg):
-        if (candidate_id == track_id and candidate_file == file_index
-                and (segment_index is None or candidate_segment == segment_index)):
+        if candidate_id != track_id or candidate_file != file_index:
+            continue
+        if merge_segments:
+            if requested_segments and candidate_segment not in requested_segments:
+                continue
+            matches.append(segment)
+        elif segment_index is None or candidate_segment == segment_index:
             return segment
+    if merge_segments and matches:
+        merged = pd.concat(matches, ignore_index=True)
+        return merged.sort_values('timestamp_parsed').reset_index(drop=True)
     raise ValueError(f'未找到雷达轨迹 ID={track_id}, file={file_index}, segment={segment_index}')
 
 
@@ -195,6 +211,29 @@ def _movement_metrics(track_df: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def _moving_status_frames(track_df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """按同一轨迹段的 MotionStatus 语义筛选可关联帧。
+
+    状态定义：1=运动、2=运动到刹停、3=静止、4=横穿。
+    状态 2 只有与同一轨迹段中的状态 1 共存时才视为有效续段；孤立的状态 2
+    不可作为运动目标参与匹配。状态 4 可独立表示横穿目标，始终保留。
+    列缺失或无法解析时保留旧的运动学降级逻辑，兼容历史文件。
+    """
+    if 'MotionStatus' not in track_df.columns:
+        return track_df, 0
+
+    status = pd.to_numeric(track_df['MotionStatus'], errors='coerce')
+    known = status.notna()
+    if not known.any():
+        return track_df, 0
+
+    static = status.eq(3)
+    has_moving_status = status.eq(1).any()
+    isolated_braking = status.eq(2) & ~has_moving_status
+    excluded = static | isolated_braking
+    return track_df.loc[~excluded].copy().reset_index(drop=True), int(excluded.sum())
+
+
 def filter_moving_radar_targets(
     radar_df: pd.DataFrame,
     config: dict[str, Any] | None = None,
@@ -205,13 +244,16 @@ def filter_moving_radar_targets(
     target_stats: list[dict[str, Any]] = []
 
     for target_id, file_index, segment_index, track_df in _radar_trajectory_groups(radar_df, cfg):
-        metrics = _movement_metrics(track_df)
+        motion_df, motion_status_filtered_frames = _moving_status_frames(track_df)
+        metrics = _movement_metrics(motion_df)
         has_motion = (
             metrics['speed_p90_mps'] >= cfg['min_speed_mps']
             or metrics['accel_p90_mps2'] >= cfg['min_accel_mps2']
             or metrics['displacement_m'] >= cfg['min_displacement_m']
         )
-        if metrics['frames'] < cfg['min_frames']:
+        if motion_df.empty and motion_status_filtered_frames:
+            status = 'filtered_motion_status'
+        elif metrics['frames'] < cfg['min_frames']:
             status = 'filtered_short_track'
         elif has_motion:
             status = 'active'
@@ -223,11 +265,12 @@ def filter_moving_radar_targets(
             'file_index': file_index,
             'segment_index': segment_index,
             'status': status,
+            'motion_status_filtered_frames': motion_status_filtered_frames,
             **metrics,
         }
         target_stats.append(entry)
         if status == 'active':
-            active_targets.append({**entry, 'df': track_df})
+            active_targets.append({**entry, 'df': motion_df})
 
     return {
         'active_targets': active_targets,
@@ -236,6 +279,9 @@ def filter_moving_radar_targets(
             'total_radar_targets': len(target_stats),
             'active_radar_targets': len(active_targets),
             'filtered_static_targets': sum(s['status'] == 'filtered_static' for s in target_stats),
+            'filtered_motion_status_targets': sum(
+                s['status'] == 'filtered_motion_status' for s in target_stats
+            ),
             'filtered_short_tracks': sum(s['status'] == 'filtered_short_track' for s in target_stats),
         },
     }
@@ -308,16 +354,29 @@ def filter_and_match_ids(
     pair_candidates.sort(key=lambda item: (item[0], -item[3]['coverage'], -item[3]['matched_frames']))
     valid_match_ids: list[dict[str, Any]] = []
     matched_radar_indices: set[int] = set()
-    assigned_intervals: dict[tuple[int, int | None], list[tuple[float, float]]] = {}
+    # FLR 与 RLR 是两个独立传感器：同一 RTK 轨迹可以同时被各自关联一次。
+    # 关联占用键必须包含雷达来源，否则混合上传时 FLR 会错误地占用 RTK，
+    # 导致同一时段的 RLR 候选（如 ID=27/56/26）被 overlaps_existing 排除。
+    assigned_intervals: dict[tuple[str, int, int | None], list[tuple[float, float]]] = {}
     for _cost, radar_index, rtk_index, metrics in pair_candidates:
         if radar_index in matched_radar_indices:
             continue
         radar_target = active_targets[radar_index]
-        rtk_id, rtk_file_index, _ = rtk_targets[rtk_index]
+        rtk_id, rtk_file_index, rtk_track = rtk_targets[rtk_index]
         track_df = radar_target['df']
         start_ts = float(track_df['timestamp_parsed'].iloc[0])
         end_ts = float(track_df['timestamp_parsed'].iloc[-1])
-        rtk_key = (rtk_id, rtk_file_index)
+        source_name = ''
+        if 'radar_source_key' in track_df.columns and not track_df.empty:
+            source_name = str(track_df['radar_source_key'].iloc[0]).strip().lower()
+        if not source_name and 'source_filename' in track_df.columns and not track_df.empty:
+            filename = str(track_df['source_filename'].iloc[0]).lower()
+            if '_flr_' in filename:
+                source_name = 'flr'
+            elif '_rlr_' in filename:
+                source_name = 'rlr'
+        source_name = source_name or 'radar'
+        rtk_key = (source_name, rtk_id, rtk_file_index)
         overlaps_existing = any(
             start_ts <= assigned_end and end_ts >= assigned_start
             for assigned_start, assigned_end in assigned_intervals.get(rtk_key, [])
@@ -331,9 +390,14 @@ def filter_and_match_ids(
         valid_match_ids.append({
             'track_id': radar_target['track_id'],
             'file_index': radar_target['file_index'],
+            'radar_filename': str(start_row.get('source_filename', '')).strip() or None,
             'segment_index': radar_target['segment_index'],
             'rtk_id': rtk_id,
             'rtk_file_index': rtk_file_index,
+            'rtk_filename': (
+                str(rtk_track['source_filename'].iloc[0]).strip()
+                if 'source_filename' in rtk_track.columns and not rtk_track.empty else None
+            ),
             'total_frames': radar_target['frames'],
             'matched_frames': metrics['matched_frames'],
             'overlap_rate': round(metrics['coverage'], 4),

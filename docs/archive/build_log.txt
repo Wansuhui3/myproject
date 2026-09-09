@@ -1,0 +1,17 @@
+雷达目标轨迹波动分析系统 - 发布包构建器
+项目目录：D:\个人\myproject
+构建 Python：C:\Users\Administrator\AppData\Local\Programs\Python\Launcher\py.exe -3
+
+==> 准备独立构建环境
+
+==> 安装构建与运行依赖（首次可能需要几分钟）
+
+==> 执行 PyInstaller 打包
+
+==> 生成可交付 ZIP
+
+打包成功。
+程序目录：D:\个人\myproject\release\RadarWaveAnalyzer_20260908_104925\package\RadarWaveAnalyzer
+交付 ZIP：D:\个人\myproject\release\RadarWaveAnalyzer_20260908_104925.zip（104.6 MB）
+程序展开后大小：255.8 MB
+交付时发送 ZIP；使用者解压后双击 RadarWaveAnalyzer.exe 即可。

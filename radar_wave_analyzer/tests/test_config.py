@@ -1,13 +1,9 @@
 """运行配置的关键参数校验测试。"""
 from copy import deepcopy
-import os
-import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from config import ConfigValidationError, _DEFAULTS, _validate_config  # noqa: E402
+from radar_wave_analyzer.config import ConfigValidationError, _DEFAULTS, _validate_config  # noqa: E402
 
 
 def test_default_configuration_is_valid():

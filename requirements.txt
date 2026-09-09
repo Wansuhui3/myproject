@@ -1,0 +1,14 @@
+# 运行时依赖（版本与 .build-venv 构建环境一致，已在 PyInstaller 打包中验证）
+dash==4.4.1
+dash-bootstrap-components==2.0.4
+Flask-Caching==2.5.1
+numpy==2.5.3
+pandas==3.0.5
+scipy==1.18.1
+plotly==7.0.0
+openpyxl>=3.1
+pywebview==6.2.1
+PyYAML==6.0.3
+
+# 开发依赖
+pytest>=8.0

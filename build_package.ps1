@@ -1,132 +1,123 @@
-# ============================================================
-# Radar Wave Analyzer - PyInstaller build script
-# Output: dist/RadarWaveAnalyzer/RadarWaveAnalyzer.exe
+# 雷达目标轨迹波动分析系统：可交付发布包构建脚本
 #
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File build_package.ps1
-# ============================================================
+# 直接运行：双击“打包发布版.cmd”；或执行
+# powershell -ExecutionPolicy Bypass -File .\build_package.ps1
+#
+# 输出：release\RadarWaveAnalyzer_yyyyMMdd_HHmmss\package\RadarWaveAnalyzer\
+#       release\RadarWaveAnalyzer_yyyyMMdd_HHmmss.zip
+#
+# 不会清理 dist、build 或历史 release，避免误删既有软件包。
+
+[CmdletBinding()]
+param([switch]$SkipDependencyInstall)
 
 $ErrorActionPreference = 'Stop'
+
+# ── 隔离编辑器注入的 sitecustomize 钩子 ──
+# 系统 PYTHONPATH 指向 VSCode 扩展的 shim 目录，其中 hook 了 subprocess 与
+# 文件删除，会导致 PyInstaller 依赖分析子进程超时（Timed out while waiting
+# for the child process to exit）与目录清理失败。打包全程清除该注入。
+$env:PYTHONPATH = $null
+$env:PYTHONNOUSERSITE = '1'
+
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$RadarDir = Join-Path $ProjectRoot 'radar_wave_analyzer'
-$DistDir = Join-Path $ProjectRoot 'dist'
-$BuildDir = Join-Path $ProjectRoot 'build'
-$SpecFile = Join-Path $ProjectRoot 'RadarWaveAnalyzer.spec'
+$AppDir = Join-Path $ProjectRoot 'radar_wave_analyzer'
+$EntryScript = Join-Path $ProjectRoot 'launcher.py'
+$Requirements = Join-Path $AppDir 'requirements.txt'
+$VenvDir = Join-Path $ProjectRoot '.build-venv'
+$ReleaseRoot = Join-Path $ProjectRoot 'release'
+$Stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$ReleaseDir = Join-Path $ReleaseRoot "RadarWaveAnalyzer_$Stamp"
+$DistDir = Join-Path $ReleaseDir 'package'
+$WorkDir = Join-Path $ReleaseDir 'work'
+$SpecDir = Join-Path $ReleaseDir 'spec'
+$ZipFile = Join-Path $ReleaseRoot "RadarWaveAnalyzer_$Stamp.zip"
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Radar Wave Analyzer - PyInstaller Build" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+function Write-Step([string]$Message) {
+    Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
 
-# 1. Find Python
-$PythonCandidates = @(
-    (Join-Path $env:USERPROFILE '.workbuddy\binaries\python\versions\3.14.3\python.exe'),
-    'python',
-    'python3'
-)
-$PythonExe = $null
-foreach ($c in $PythonCandidates) {
-    $result = Get-Command $c -ErrorAction SilentlyContinue
-    if ($result) {
-        $PythonExe = $result.Source
-        break
+function Find-Python {
+    # 优先 Python Launcher，避免误用 Microsoft Store 的 python 占位程序。
+    $py = Get-Command py.exe -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            & $py.Source -3 -c "import sys; print(sys.executable)" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return @($py.Source, '-3') }
+        } catch { }
     }
-}
-if (-not $PythonExe) {
-    Write-Host "[ERROR] Python not found" -ForegroundColor Red
-    exit 1
-}
-Write-Host "Python: $PythonExe" -ForegroundColor Green
-
-# 2. Install build dependencies
-Write-Host ""
-Write-Host "[1/4] Installing build deps (pyinstaller + pywebview)..." -ForegroundColor Cyan
-& $PythonExe -m pip install pyinstaller pywebview --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Failed to install build dependencies" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  Done" -ForegroundColor Green
-
-# 3. Ensure app dependencies (matplotlib for image export, no kaleido needed)
-Write-Host ""
-Write-Host "[2/4] Installing app dependencies..." -ForegroundColor Cyan
-& $PythonExe -m pip install -r (Join-Path $RadarDir 'requirements.txt') --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Failed to install app dependencies" -ForegroundColor Red
-    exit 1
-}
-Write-Host "  Done" -ForegroundColor Green
-
-# 4. Clean old builds (skip if files are locked)
-Write-Host ""
-Write-Host "[3/4] Cleaning old builds..." -ForegroundColor Cyan
-if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir -ErrorAction SilentlyContinue }
-if (Test-Path $SpecFile) { Remove-Item -Force $SpecFile -ErrorAction SilentlyContinue }
-if (Test-Path $DistDir) {
-    $distFolder = Join-Path $DistDir 'RadarWaveAnalyzer'
-    if (Test-Path $distFolder) { Remove-Item -Recurse -Force $distFolder -ErrorAction SilentlyContinue }
-}
-Write-Host "  Done" -ForegroundColor Green
-
-# 5. PyInstaller build
-Write-Host ""
-Write-Host "[4/4] PyInstaller building (may take a few minutes)..." -ForegroundColor Cyan
-Write-Host "  Target: $ProjectRoot\launcher.py" -ForegroundColor DarkGray
-
-& $PythonExe -m PyInstaller `
-    --onedir `
-    --windowed `
-    --noconfirm `
-    --name "RadarWaveAnalyzer" `
-    --distpath $DistDir `
-    --workpath $BuildDir `
-    --specpath $ProjectRoot `
-    --paths "$ProjectRoot" `
-    --add-data "$RadarDir\config.yaml;." `
-    --add-data "$RadarDir\assets;assets" `
-    --hidden-import dash `
-    --hidden-import dash.html `
-    --hidden-import dash.dcc `
-    --hidden-import dash_bootstrap_components `
-    --hidden-import plotly `
-    --hidden-import plotly.express `
-    --hidden-import flask_caching `
-    --hidden-import flask_caching.backends `
-    --hidden-import yaml `
-    --hidden-import numpy `
-    --hidden-import pandas `
-    --hidden-import matplotlib `
-    --hidden-import matplotlib.backends.backend_agg `
-    --hidden-import webview `
-    --hidden-import webview.platforms.winforms `
-    --collect-submodules radar_wave_analyzer `
-    --collect-all dash `
-    --collect-all plotly `
-    --collect-all dash_bootstrap_components `
-    --collect-all webview `
-    (Join-Path $ProjectRoot 'launcher.py')
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "[ERROR] PyInstaller build failed, exit code: $LASTEXITCODE" -ForegroundColor Red
-    Write-Host "Check the output above for details." -ForegroundColor Red
-    exit 1
+    foreach ($name in @('python.exe', 'python3.exe')) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if (-not $command) { continue }
+        try {
+            & $command.Source -c "import sys; print(sys.executable)" 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { return @($command.Source) }
+        } catch { }
+    }
+    throw '未找到可用 Python。请安装 Python 3.10–3.13，并勾选 Add Python to PATH。'
 }
 
-# 6. Verify output
-$OutputExe = Join-Path (Join-Path $DistDir 'RadarWaveAnalyzer') 'RadarWaveAnalyzer.exe'
-if (Test-Path $OutputExe) {
-    $Size = [math]::Round((Get-Item $OutputExe).Length / 1MB, 1)
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  BUILD SUCCESS" -ForegroundColor Green
-    Write-Host "  Output: $OutputExe" -ForegroundColor Green
-    Write-Host "  Size: $Size MB (including runtime)" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "To distribute, copy the entire 'RadarWaveAnalyzer' folder." -ForegroundColor Yellow
-} else {
-    Write-Host "[ERROR] Build output not found" -ForegroundColor Red
-    exit 1
+function Invoke-BasePython([string[]]$Arguments) {
+    & $script:PythonExe @script:PythonPrefix @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Python 命令失败：$($Arguments -join ' ')" }
 }
+
+if (-not (Test-Path -LiteralPath $EntryScript)) { throw "找不到启动文件：$EntryScript" }
+if (-not (Test-Path -LiteralPath $Requirements)) { throw "找不到依赖文件：$Requirements" }
+
+Write-Host '雷达目标轨迹波动分析系统 - 发布包构建器' -ForegroundColor Green
+Write-Host "项目目录：$ProjectRoot"
+$PythonCommand = Find-Python
+$PythonExe = $PythonCommand[0]
+$PythonPrefix = @($PythonCommand | Select-Object -Skip 1)
+Write-Host "构建 Python：$PythonExe $($PythonPrefix -join ' ')" -ForegroundColor DarkGray
+
+Write-Step '准备独立构建环境'
+if (-not (Test-Path -LiteralPath (Join-Path $VenvDir 'Scripts\python.exe'))) {
+    Invoke-BasePython @('-m', 'venv', $VenvDir)
+}
+$VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+if (-not (Test-Path -LiteralPath $VenvPython)) { throw '虚拟环境创建失败。' }
+
+if (-not $SkipDependencyInstall) {
+    Write-Step '安装构建与运行依赖（首次可能需要几分钟）'
+    & $VenvPython -m pip install --upgrade pip --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'pip 更新失败。' }
+    & $VenvPython -m pip install -r $Requirements pyinstaller --quiet
+    if ($LASTEXITCODE -ne 0) { throw '依赖安装失败，请检查网络或 requirements.txt。' }
+    & $VenvPython -c "import openpyxl; print('openpyxl', openpyxl.__version__)"
+    if ($LASTEXITCODE -ne 0) { throw 'openpyxl 安装校验失败，无法生成支持 Excel 导出的发布包。' }
+}
+
+Write-Step '执行 PyInstaller 打包'
+New-Item -ItemType Directory -Force -Path $ReleaseRoot, $DistDir, $WorkDir, $SpecDir | Out-Null
+
+# 相对路径 + 显式资源，不依赖含机器绝对路径的 RadarWaveAnalyzer.spec。
+$PyInstallerArgs = @(
+    '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--windowed',
+    '--name', 'RadarWaveAnalyzer', '--distpath', $DistDir,
+    '--workpath', $WorkDir, '--specpath', $SpecDir, '--paths', $ProjectRoot,
+    '--add-data', "$AppDir\config.yaml;.", '--add-data', "$AppDir\assets;assets",
+    '--collect-submodules', 'radar_wave_analyzer', '--collect-all', 'dash',
+    '--collect-all', 'plotly', '--collect-all', 'dash_bootstrap_components',
+    '--collect-all', 'webview', '--collect-all', 'openpyxl', '--hidden-import', 'flask_caching.backends',
+    $EntryScript
+)
+& $VenvPython @PyInstallerArgs
+if ($LASTEXITCODE -ne 0) { throw 'PyInstaller 打包失败，请查看上方错误信息。' }
+
+$AppPackage = Join-Path $DistDir 'RadarWaveAnalyzer'
+$Exe = Join-Path $AppPackage 'RadarWaveAnalyzer.exe'
+if (-not (Test-Path -LiteralPath $Exe)) { throw "未找到打包产物：$Exe" }
+
+Write-Step '生成可交付 ZIP'
+Compress-Archive -Path $AppPackage -DestinationPath $ZipFile -CompressionLevel Optimal -Force
+$PackageSize = [math]::Round(((Get-ChildItem -LiteralPath $AppPackage -Recurse -File |
+    Measure-Object -Property Length -Sum).Sum / 1MB), 1)
+$ZipSize = [math]::Round(((Get-Item -LiteralPath $ZipFile).Length / 1MB), 1)
+
+Write-Host "`n打包成功。" -ForegroundColor Green
+Write-Host "程序目录：$AppPackage" -ForegroundColor Green
+Write-Host "交付 ZIP：$ZipFile（$ZipSize MB）" -ForegroundColor Green
+Write-Host "程序展开后大小：$PackageSize MB" -ForegroundColor Green
+Write-Host '交付时发送 ZIP；使用者解压后双击 RadarWaveAnalyzer.exe 即可。' -ForegroundColor Yellow

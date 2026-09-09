@@ -15,15 +15,9 @@ import uuid
 
 from flask import has_request_context, session
 
-try:
-    from .extensions import cache
-except ImportError:
-    from extensions import cache
+from .extensions import cache
 
-try:
-    from .config import get
-except ImportError:
-    from config import get
+from .config import get
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +259,18 @@ def get_rtk_curve_result(key: str):
     return cache.get(_comparison_key(key, 'rtk_curve_df'))
 
 
+def set_performance_result(key: str, results: dict):
+    """缓存性能指标评估结果（一次对齐计算全部物理量，切换时直接读取）。"""
+    cache.set(_comparison_key(key, 'perf_results'), results)
+
+
+def get_performance_result(key: str):
+    """获取缓存的性能指标评估结果。"""
+    return cache.get(_comparison_key(key, 'perf_results'))
+
+
 def clear_comparison_data(key: str = 'default'):
     """清除对比数据缓存。"""
-    for suffix in ['radar_df', 'rtk_df', 'aligned_df', 'summary', 'rtk_curve_df']:
+    for suffix in ['radar_df', 'rtk_df', 'aligned_df', 'summary', 'rtk_curve_df',
+                   'perf_results']:
         cache.delete(_comparison_key(key, suffix))

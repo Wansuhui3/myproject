@@ -69,10 +69,7 @@ def _find_free_port(start_port: int = DEFAULT_PORT) -> int:
 def _start_flask(port: int):
     """后台线程：导入并启动 Flask 服务器。"""
     # 延迟导入重量级库（dash/pandas/plotly），此时窗口已显示
-    try:
-        from radar_wave_analyzer.app import app
-    except ImportError:
-        from app import app  # type: ignore[no-redef]
+    from radar_wave_analyzer.app import app
 
     app.run(
         host=DEFAULT_HOST,
@@ -118,6 +115,8 @@ def main():
         min_size=(800, 600),
         resizable=True,
         confirm_close=True,
+        # 允许鼠标选中文本（pywebview 默认关闭，会导致打包后无法手动选择复制数据）
+        text_select=True,
     )
 
     # 仅在 HTTP 已可访问后导航，避免“模块导入完成但端口尚未监听”的竞态。

@@ -2,10 +2,12 @@
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('D:\\个人\\myproject\\radar_wave_analyzer\\config.yaml', '.'), ('D:\\个人\\myproject\\radar_wave_analyzer\\assets', 'assets')]
+datas = [('D:/个人/myproject/radar_wave_analyzer/config.yaml', '.'), ('D:/个人/myproject/radar_wave_analyzer/assets', 'assets')]
 binaries = []
-hiddenimports = ['dash', 'dash.html', 'dash.dcc', 'dash_bootstrap_components', 'plotly', 'plotly.express', 'flask_caching', 'flask_caching.backends', 'yaml', 'numpy', 'pandas', 'matplotlib', 'matplotlib.backends.backend_agg', 'webview', 'webview.platforms.winforms']
+hiddenimports = ['dash', 'dash.html', 'dash.dcc', 'dash_bootstrap_components', 'plotly', 'plotly.express', 'flask_caching', 'flask_caching.backends', 'yaml', 'numpy', 'pandas', 'webview', 'webview.platforms.winforms']
 hiddenimports += collect_submodules('radar_wave_analyzer')
+# 测试代码不进入打包产物
+hiddenimports = [h for h in hiddenimports if not h.startswith('radar_wave_analyzer.tests')]
 tmp_ret = collect_all('dash')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('plotly')
@@ -17,8 +19,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['D:\\个人\\myproject\\launcher.py'],
-    pathex=['D:\\个人\\myproject'],
+    ['D:/个人/myproject/launcher.py'],
+    pathex=['D:/个人/myproject'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

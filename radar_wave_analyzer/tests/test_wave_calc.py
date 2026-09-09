@@ -1,15 +1,10 @@
 """
 wave_calc 模块单元测试。
 """
-import sys
-import os
-# 将 radar_wave_analyzer 目录加入 sys.path，使得 core 和 config 可以被直接导入
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import numpy as np
 import pandas as pd
 import pytest
-from core.wave_calc import calc_frame_diff, calc_wave_stats, compute_segment_stats
+from radar_wave_analyzer.core.wave_calc import calc_frame_diff, calc_wave_stats, compute_segment_stats
 
 
 def _make_ts_series(timestamps: list[str]) -> pd.DatetimeIndex:
