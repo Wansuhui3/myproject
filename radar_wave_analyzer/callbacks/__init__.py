@@ -4,6 +4,7 @@
 模块依赖方向（避免循环导入）：
   wave_helpers / wave_views          → 纯数据 / 纯渲染（不导入回调模块）
   wave_upload_callbacks              → wave_helpers, wave_views
+  wave_query_callbacks               → wave_helpers, wave_views
   wave_callbacks                     → wave_helpers, wave_views
   cmp_preview_render                 → 纯渲染（不导入回调模块）
   cmp_mode / cmp_upload / cmp_mapping_callbacks → cmp_preview_render
@@ -17,6 +18,7 @@
 波动分析（wave_upload_callbacks）：
   on_radar_change_label / on_radar_change_clear → 雷达切换 → 更新位置标签 / 清空页面
   on_upload_csv            → 拖拽上传 → 解析CSV/JSON → 分段 → 缓存
+波动分析（wave_query_callbacks）：
   on_timestamp_input       → 筛选时间窗口 → 提取ID列表
   refresh_quantity_options → 数据加载后刷新物理量多选项
   on_wave_clear            → 清空波动分析页面
@@ -65,6 +67,7 @@ from . import (  # noqa: F401
     perf_panel_callbacks,
     perf_run_callbacks,
     wave_callbacks,
+    wave_query_callbacks,
     wave_upload_callbacks,
 )
 
