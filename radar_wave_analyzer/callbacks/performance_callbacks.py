@@ -49,12 +49,12 @@ from ..comparison.exporter import (
 )
 
 from .helpers import _perf_placeholder, _summary_plain_text
-from .comparison_callbacks import (
-    _cmp_bins_placeholder,
+from .cmp_mapping_callbacks import (
     _cmp_mapping_chart_config,
     _cmp_resolve_mappings,
     _append_auto_performance_mappings,
 )
+from .cmp_preview_render import _cmp_bins_placeholder
 
 logger = logging.getLogger(__name__)
 
