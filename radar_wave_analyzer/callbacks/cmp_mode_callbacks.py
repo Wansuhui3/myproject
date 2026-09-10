@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
     Output('cmp-preview-card', 'children', allow_duplicate=True),
     Output('cmp-config-card', 'children', allow_duplicate=True),
     Output('cmp-graph', 'figure', allow_duplicate=True),
-    Output('cmp-graph-title', 'children', allow_duplicate=True),
     Output('cmp-stats-content', 'children', allow_duplicate=True),
     Output('cmp-bins-content', 'children', allow_duplicate=True),
     Output('perf-panel-container', 'children', allow_duplicate=True),
@@ -77,7 +76,6 @@ def on_cmp_clear(n):
         _cmp_preview_empty(),                                # preview card
         _cmp_config_blank(),                                 # config card（同时销毁嵌套组件）
         go.Figure(),                                         # graph
-        html.Span('请上传雷达与RTK数据并执行对齐', className='feedback-muted'),  # graph-title
         _cmp_stats_placeholder(),                            # stats
         _cmp_bins_placeholder(),                             # bins
         perf_panel,                                          # 性能验收表

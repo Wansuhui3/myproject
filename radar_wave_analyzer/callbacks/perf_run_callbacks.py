@@ -101,7 +101,6 @@ def update_selected_segments(check_values, state):
 
 @callback(
     Output('cmp-graph', 'figure'),
-    Output('cmp-graph-title', 'children'),
     Output('cmp-stats-content', 'children'),
     Output('cmp-bins-content', 'children'),
     Output('perf-panel-container', 'children'),
@@ -230,7 +229,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         state['selected_id'] = track_id
         perf_panel = _perf_placeholder(f'错误: {e}')
         return (
-            empty_fig, '对齐失败',
+            empty_fig,
             html.Div([html.Div('误差统计', className='stats-card-title'),
                       html.Div(f'错误: {e}', className='stats-empty')], className='stats-card'),
             no_update if keep_snapshot else html.Div(
@@ -251,7 +250,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         state['selected_id'] = track_id
         perf_panel = _perf_placeholder('无匹配数据')
         return (
-            empty_fig, '无匹配数据',
+            empty_fig,
             render_cmp_error_stats_empty(), no_update if keep_snapshot else _cmp_bins_placeholder(),
             perf_panel,
             state, '无匹配帧',
@@ -261,7 +260,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         state['alignment_done'] = False
         perf_panel = _perf_placeholder('映射字段不可用')
         return (
-            go.Figure(), '映射字段不可用',
+            go.Figure(),
             render_cmp_error_stats_empty(), no_update if keep_snapshot else _cmp_bins_placeholder(),
             perf_panel,
             state, '当前目标所在文件不包含所选映射字段，请更换物理量后重试',
@@ -295,27 +294,6 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         rtk_curve_df=result.get('rtk_curve_df'),
         perf_results=perf_results,
     )
-
-    # 标题（多文件时附加文件序号；合并模式附加合并段数）
-    if merge_mode:
-        title_id = f'ID={track_id} [合并{merged_count}段]'
-    elif file_index is not None:
-        title_id = f'ID={track_id} [文件{file_index + 1}]'
-    else:
-        title_id = f'ID={track_id}'
-    title = [
-        html.Span(title_id, className='traj-id-badge'),
-        html.Span(' | ', style={'color': '#94a3b8'}),
-        html.Span(
-            f"{match_summary['matched_frames']}/{match_summary['total_frames']}帧匹配",
-            className='frame-count',
-        ),
-        html.Span(' | ', style={'color': '#94a3b8'}),
-        html.Span(
-            f"位置RMSE={summary['pos_error_abs']['rmse']}m",
-            className='frame-count',
-        ),
-    ]
 
     # 统计面板
     stats_html = render_cmp_error_stats(
@@ -356,7 +334,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         f' · RTK范围外={match_summary.get("out_of_rtk_range_frames", 0)}帧'
     )
     return (
-        fig, title, stats_html, bins_html,
+        fig, stats_html, bins_html,
         perf_panel,
         state,
         f'✓ {merge_text}对齐完成 — {match_summary["matched_frames"]}/{match_summary["total_frames"]}帧匹配'

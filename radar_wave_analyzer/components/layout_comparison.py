@@ -145,10 +145,6 @@ def build_cmp_center_panel() -> dbc.Col:
     """中间面板：专注展示真值对比曲线。"""
     return dbc.Col([
         html.Div([
-            html.Div(
-                id='cmp-graph-title', className='graph-title-bar',
-                children=[html.Span('请上传雷达与RTK数据并执行对齐', className='feedback-muted')],
-            ),
             dcc.Loading(
                 id='cmp-loading-graph', type='circle', color='#3b82f6',
                 parent_className='loading-graph-inner',

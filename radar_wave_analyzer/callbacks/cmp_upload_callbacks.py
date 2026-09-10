@@ -58,7 +58,6 @@ def _render_upload_feedback(role_label: str, meta: dict, prefix: str = '') -> ht
     Output('cmp-upload-radar-feedback', 'children', allow_duplicate=True),
     Output('cmp-upload-rtk-feedback', 'children', allow_duplicate=True),
     Output('cmp-graph', 'figure', allow_duplicate=True),
-    Output('cmp-graph-title', 'children', allow_duplicate=True),
     Output('cmp-stats-content', 'children', allow_duplicate=True),
     Output('cmp-bins-content', 'children', allow_duplicate=True),
     Output('perf-panel-container', 'children', allow_duplicate=True),
@@ -135,7 +134,7 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
             f'❌ {role.upper()}: 全部解析失败 - {"；".join(parse_errors)}',
             className='feedback-error',
         )
-        graph_noop = (no_update,) * 6   # graph/title/stats/bins/perf面板/perf结论
+        graph_noop = (no_update,) * 4   # graph/stats/bins/perf面板
         if role == 'radar':
             return (no_update, no_update, no_update, fb, no_update, *graph_noop)
         return (no_update, no_update, no_update, no_update, fb, *graph_noop)
@@ -286,7 +285,7 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
             config = _cmp_config_blank()
 
         return (state, preview, config, radar_fb, rtk_fb,
-                go.Figure(), '请选择目标ID并执行对齐', _cmp_stats_placeholder(), _cmp_bins_placeholder(),
+                go.Figure(), _cmp_stats_placeholder(), _cmp_bins_placeholder(),
                 _perf_placeholder())
     else:
         # ═══ 等待态 → 并列展示双方各自状态 ═══
@@ -300,5 +299,5 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
         ], className='app-card')
         logger.info('[CMP-UPLOAD] → 等待态 (radar=%s rtk=%s)', has_radar, has_rtk)
         return (state, preview, config, radar_fb, rtk_fb,
-                go.Figure(), '请选择目标ID并执行对齐', _cmp_stats_placeholder(), _cmp_bins_placeholder(),
+                go.Figure(), _cmp_stats_placeholder(), _cmp_bins_placeholder(),
                 _perf_placeholder())
