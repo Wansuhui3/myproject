@@ -28,9 +28,20 @@ def _summary_plain_text(node) -> str:
 
     复制摘要时用户只需要数据行（如 ``Dx最大波动：…`` 或分距离行），
     [1]/[2] 等快照来源说明（perf-summary-snapshot-list/meta）不复制。
+    摘要行为数值级标红拆成多个 span 后，同一行仍按整行文本输出，不拆行。
     """
     skip_fragments = ('perf-summary-snapshot-list', 'perf-summary-snapshot-meta')
     lines: list[str] = []
+
+    def _collect(item) -> str:
+        """收集节点内全部文本，用于把同一行的多个 span 还原为一行。"""
+        if item is None:
+            return ''
+        if isinstance(item, (list, tuple)):
+            return ''.join(_collect(child) for child in item)
+        if isinstance(item, str):
+            return item
+        return _collect(getattr(item, 'children', None))
 
     def _walk(item):
         if item is None:
@@ -45,6 +56,11 @@ def _summary_plain_text(node) -> str:
             return
         cls = str(getattr(item, 'className', '') or '')
         if any(fragment in cls for fragment in skip_fragments):
+            return
+        if 'perf-summary-row' in cls:
+            text = _collect(getattr(item, 'children', None)).strip()
+            if text:
+                lines.append(text)
             return
         _walk(getattr(item, 'children', None))
 

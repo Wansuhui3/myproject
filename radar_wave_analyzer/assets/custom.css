@@ -1780,8 +1780,8 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* 分距离性能摘要：仅不合格数据标红，通过/样本不足保持中性灰 */
-.perf-summary-row-fail {
+/* 分距离性能摘要：行容器保持中性灰，仅不合格的具体数值标红 */
+.perf-summary-value-fail {
     color: #dc2626;
     font-weight: 600;
 }
