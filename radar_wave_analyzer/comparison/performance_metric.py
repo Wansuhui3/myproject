@@ -10,11 +10,11 @@ import numpy as np
 import pandas as pd
 
 from .performance_common import (
+    _TRUTH_DISTANCE_COL,
     STATUS_FAIL,
     STATUS_INSUFFICIENT,
     STATUS_PASS,
     STATUS_UNDECIDABLE,
-    _TRUTH_DISTANCE_COL,
     _assign_bins,
     _compute_continuity_breaks,
     _resolve_column,

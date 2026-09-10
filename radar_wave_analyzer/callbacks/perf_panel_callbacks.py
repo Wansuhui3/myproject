@@ -8,15 +8,12 @@ from dash import Input, Output, State, callback, no_update
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import get_performance_result
-
 from ..components.performance_panel import render_performance_body
 from ..components.performance_summary import render_performance_snapshot_summary
-
+from ..config import get
 from .helpers import _summary_plain_text
-from .perf_shared import _perf_summary_source_key, _perf_summary_snapshot_label
+from .perf_shared import _perf_summary_snapshot_label, _perf_summary_source_key
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +23,8 @@ logger = logging.getLogger(__name__)
 @callback(
     Output('perf-summary-snapshots', 'data'),
     Output('perf-summary-feedback', 'children'),
+    Output('cmp-bins-content', 'children', allow_duplicate=True),
+    Output('perf-summary-copy', 'content'),
     Input('perf-summary-insert-btn', 'n_clicks'),
     Input('perf-summary-remove-btn', 'n_clicks'),
     Input('perf-summary-clear-btn', 'n_clicks'),
@@ -34,27 +33,45 @@ logger = logging.getLogger(__name__)
     prevent_initial_call=True,
 )
 def update_perf_summary_snapshots(_insert, _remove, _clear, state, snapshot_store):
-    """仅由用户操作修改已插入摘要，普通执行对齐不会覆盖快照。"""
+    """用户操作时单次回调输出：快照 store + 已插入摘要 + 剪贴板纯文本。
+
+    原实现拆成「写 store → 监听 store 重渲染」两步链式回调，两次输出都
+    落在 cmp-loading-bins 包裹的卡片内，导致插入时 Loading 动画闪两次；
+    合并为单次输出后只闪一次。执行对齐不会触发本回调，历史快照安全。
+    """
     triggered = dash_ctx.triggered[0]['prop_id'].split('.')[0] if dash_ctx.triggered else ''
     store = dict(snapshot_store or {})
     items = list(store.get('items') or [])
+    rules = (get('performance_metrics', {}) or {}).get('metrics') or {}
+
+    def _render(render_items):
+        summary_html = render_performance_snapshot_summary(render_items, rules)
+        return summary_html, _summary_plain_text(summary_html)
 
     if triggered == 'perf-summary-clear-btn':
-        return {'source_key': '', 'items': []}, '已清空已插入摘要'
+        summary_html, copy_text = _render([])
+        return (
+            {'source_key': '', 'items': []},
+            '已清空已插入摘要',
+            summary_html,
+            copy_text,
+        )
     if triggered == 'perf-summary-remove-btn':
         if not items:
-            return no_update, '没有可删除的摘要'
+            raise PreventUpdate
         items.pop()
-        return {
+        new_store = {
             'source_key': store.get('source_key') or '',
             'items': items,
-        }, '已删除最后一次插入的数据'
+        }
+        summary_html, copy_text = _render(items)
+        return new_store, '已删除最后一次插入的数据', summary_html, copy_text
     if triggered != 'perf-summary-insert-btn':
         raise PreventUpdate
 
     summaries = (state or {}).get('perf_summaries') or {}
     if not state or not state.get('alignment_done') or not summaries:
-        return no_update, '请先执行对齐，再插入当前数据'
+        return no_update, '请先执行对齐，再插入当前数据', no_update, no_update
 
     source_key = _perf_summary_source_key(state)
     if store.get('source_key') != source_key:
@@ -64,27 +81,13 @@ def update_perf_summary_snapshots(_insert, _remove, _clear, state, snapshot_stor
         'label': _perf_summary_snapshot_label(state),
         'results': summaries,
     })
-    return {
-        'source_key': source_key,
-        'items': items,
-    }, f'已插入第 {len(items)} 次摘要'
-
-
-@callback(
-    Output('cmp-bins-content', 'children', allow_duplicate=True),
-    Output('perf-summary-copy', 'content'),
-    Input('perf-summary-snapshots', 'data'),
-    prevent_initial_call=True,
-)
-def render_perf_summary_snapshots(snapshot_store):
-    """快照更新时才重绘已插入摘要，避免执行对齐覆盖历史数据。
-
-    同时生成剪贴板纯文本：只含数据行，不含 [1]/[2] 快照来源元信息。
-    """
-    items = (snapshot_store or {}).get('items') or []
-    rules = (get('performance_metrics', {}) or {}).get('metrics') or {}
-    summary_html = render_performance_snapshot_summary(items, rules)
-    return summary_html, _summary_plain_text(summary_html)
+    summary_html, copy_text = _render(items)
+    return (
+        {'source_key': source_key, 'items': items},
+        f'已插入第 {len(items)} 次摘要',
+        summary_html,
+        copy_text,
+    )
 
 
 # ---- [C4b] 性能验收：指标切换 ----

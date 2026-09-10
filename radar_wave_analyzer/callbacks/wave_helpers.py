@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from ..components.graph_builder import BOX_JUMP_COLOR
-from ..core.wave_calc import compute_segment_stats, compute_fluctuation_stats
+from ..core.wave_calc import compute_fluctuation_stats, compute_segment_stats
 
 _QUANTITY_METADATA_COLUMNS = frozenset({
     'timestamp', 'timestamp_parsed', 'ID', 'Track_Age', 'file_index',

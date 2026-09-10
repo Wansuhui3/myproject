@@ -2,7 +2,6 @@
 import os
 import re
 
-
 _TRACK_FILENAME_PATTERN = re.compile(
     r'^(?P<device>.+?)_(?P<source>flr|rlr)_track_'
     r'(?P<year>\d{4})_(?P<month>\d{1,2})_(?P<day>\d{1,2})_'

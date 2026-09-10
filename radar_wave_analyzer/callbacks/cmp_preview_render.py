@@ -1,8 +1,9 @@
-from dash import Input, html, dcc
-from ..config import get
-from ..core.data_loader import identify_radar_source
-from ..comparison.parser import validate_overlap
+from dash import dcc, html
+
 from ..comparison.file_identity import compact_filename_label, natural_filename_key
+from ..comparison.parser import validate_overlap
+from ..core.data_loader import identify_radar_source
+
 """真值对比纯渲染辅助：占位组件、预览卡片、ID 列表、配置表单。
 
 不得定义回调，不得导入任何回调模块。
@@ -25,19 +26,6 @@ def _cmp_config_blank():
 def _build_cmp_config_with_ids(id_list, filter_stats=None):
     """根据ID列表构建配置卡内部内容（不含外层app-card+title，因layout模板已提供）。"""
     id_html = _render_cmp_id_list(id_list)
-    filter_summary = None
-    if filter_stats:
-        filter_summary = html.Div(
-            (
-                f'ID过滤：总计 {filter_stats.get("total_radar_targets", 0)}，'
-                f'静止剔除 {filter_stats.get("filtered_static_targets", 0)}，'
-                f'静止状态剔除 {filter_stats.get("filtered_motion_status_targets", 0)}，'
-                f'短轨迹剔除 {filter_stats.get("filtered_short_tracks", 0)}，'
-                f'有效关联 {filter_stats.get("matched_target_pairs", 0)}'
-            ),
-            className='feedback-muted',
-            style={'fontSize': '11px', 'marginBottom': '6px'},
-        )
     return html.Div([
         html.Div('目标ID',
                  style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px'}),

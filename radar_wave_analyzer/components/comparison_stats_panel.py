@@ -24,20 +24,16 @@ def render_cmp_error_stats(
         metrics = mapping.get('metrics') or {}
         unit = str(mapping.get('radar_unit') or mapping.get('unit') or '')
         rows.append(_stat_row(
-            f'Δ{radar_col} RMSE',
+            f'{radar_col} RMSE',
             _fmt_val(metrics.get('rmse')),
             unit,
         ))
 
-    # 同时展示门控 RMSE、时间有效全样本 RMSE 和匹配率，避免空间门控
-    # 将大误差帧剔除后只剩一个看似很小的 RMSE。
+    # 同时展示位置匹配 RMSE 与匹配率；位置全时段 RMSE 与位置匹配 RMSE
+    # 在无门控剔除时恒等，仅保留一个避免重复。
     if summary:
         matched = summary.get('pos_error_abs') or {}
-        time_valid = summary.get('pos_error_abs_time_valid') or {}
-        rows.extend([
-            _stat_row('位置匹配 RMSE', _fmt_val(matched.get('rmse')), 'm'),
-            _stat_row('位置全时段 RMSE', _fmt_val(time_valid.get('rmse')), 'm'),
-        ])
+        rows.append(_stat_row('位置匹配 RMSE', _fmt_val(matched.get('rmse')), 'm'))
     if match_summary:
         rows.append(_stat_row(
             '匹配率',

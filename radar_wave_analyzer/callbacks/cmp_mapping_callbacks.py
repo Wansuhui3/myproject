@@ -1,15 +1,15 @@
 from dash import (
+    ALL,
     Input,
     Output,
     State,
     callback,
-    html,
     dcc,
-    ALL,
+    html,
 )
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
-from ..config import get
+
 """[C2a] 原始 CSV 物理量映射配置：预览、增删改、排序与映射解析。"""
 
 

@@ -23,7 +23,6 @@ import numpy as np
 import pandas as pd
 
 from ..config import get
-
 from .data_loader import parse_timestamp
 
 # ── 兼容 re-export：test_segmenter.py 直接从本模块导入 _detect_* ──
@@ -383,11 +382,12 @@ def segment_trajectories(
         return meta_df, segments_dict
 
     logger.info(
-        f'分段完成: {len(meta_df)} 段, '
-        f'异常段 {meta_df["is_abnormal"].sum()}, '
-        f'空间跳变段 {meta_df["spatial_anomaly"].sum()}, '
-        f'同时间戳位置冲突段 {meta_df["timestamp_position_conflict"].sum()}, '
-        f'样本不足 {meta_df["insufficient_samples"].sum()}'
+        '分段完成: %s 段, 异常段 %s, 空间跳变段 %s, '
+        '同时间戳位置冲突段 %s, 样本不足 %s',
+        len(meta_df), meta_df['is_abnormal'].sum(),
+        meta_df['spatial_anomaly'].sum(),
+        meta_df['timestamp_position_conflict'].sum(),
+        meta_df['insufficient_samples'].sum(),
     )
     return meta_df, segments_dict
 

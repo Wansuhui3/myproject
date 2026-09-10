@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 
 from ..config import get
-from .performance import STATUS_FAIL
 from .export_format import (
     _criteria_lines,
     _fmt_epoch_ts,
@@ -23,6 +22,7 @@ from .export_format import (
     _py,
     _sheet_safe_name,
 )
+from .performance import STATUS_FAIL
 
 logger = logging.getLogger(__name__)
 
@@ -315,8 +315,6 @@ def _write_workbook(
             dtype=float)
         limits = pd.to_numeric(fr.get('normal_limit'), errors='coerce').to_numpy(
             dtype=float)
-        three_limits = pd.to_numeric(
-            fr.get('three_frame_limit'), errors='coerce').to_numpy(dtype=float)
         mask = np.isfinite(abs_err) & np.isfinite(limits)
         is_binned = perf_result.get('mode') != 'single_limit'
         if is_binned:

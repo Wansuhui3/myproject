@@ -5,12 +5,16 @@ segmenter 模块单元测试。
 import numpy as np
 import pandas as pd
 import pytest
+
 import radar_wave_analyzer.core.segmenter as seg_mod
-from radar_wave_analyzer.core.segmenter import (
-    segment_trajectories, get_segment_ids_by_time, _detect_breakpoints,
-    _detect_lifecycle_breaks, _segment_spatial_extremes,
-)
 from radar_wave_analyzer.core.data_loader import parse_timestamp
+from radar_wave_analyzer.core.segmenter import (
+    _detect_breakpoints,
+    _detect_lifecycle_breaks,
+    _segment_spatial_extremes,
+    get_segment_ids_by_time,
+    segment_trajectories,
+)
 
 
 def _make_test_df(records: list[dict]) -> pd.DataFrame:

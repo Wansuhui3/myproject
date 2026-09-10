@@ -4,11 +4,11 @@
 """
 import os
 import secrets
+
 import dash
-import dash_bootstrap_components as dbc
 from flask_caching import Cache
 
-from .config import get, _get_base_dir
+from .config import _get_base_dir, get
 
 LOCAL_BOOTSTRAP = '/assets/bootstrap.min.css'
 

@@ -1,22 +1,27 @@
-import json
+import logging
+
 import plotly.graph_objects as go
 from dash import (
     Input,
     Output,
     State,
     callback,
-    no_update,
-    html,
     dcc,
+    html,
+    no_update,
 )
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
-from ..config import get
-from ..cache import clear_comparison_data
-from .helpers import _perf_placeholder
-from .cmp_preview_render import _cmp_bins_placeholder, _cmp_config_blank, _cmp_preview_empty, _cmp_stats_placeholder
 
-import logging
+from ..cache import clear_comparison_data
+from .cmp_preview_render import (
+    _cmp_bins_placeholder,
+    _cmp_config_blank,
+    _cmp_preview_empty,
+    _cmp_stats_placeholder,
+)
+from .helpers import _perf_placeholder
+
 logger = logging.getLogger(__name__)
 """[C0] 对比页清空 + [C1] 模式切换（面板显隐与上传区重置）。"""
 

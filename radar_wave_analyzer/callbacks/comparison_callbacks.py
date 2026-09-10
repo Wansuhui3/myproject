@@ -5,19 +5,21 @@ cmp_mapping_callbacks；纯渲染 helpers 见 cmp_preview_render。
 """
 import json
 import logging
+
 from dash import (
+    ALL,
     Input,
     Output,
     State,
     callback,
     html,
-    ALL,
 )
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
-from ..config import get
+
 from ..cache import get_comparison_data
 from ..comparison.service import analyse_selected_track, resolve_track_selection
+from ..config import get
 from .cmp_preview_render import _parse_cmp_index, _render_cmp_id_list
 
 logger = logging.getLogger(__name__)

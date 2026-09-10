@@ -4,7 +4,6 @@ Plotly 图表构建模块（波动分析域）。
 """
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -226,7 +225,8 @@ def build_multi_subplot_graph(
             mode='lines',
             name=qty_label,
             line=dict(color=color, width=2),
-            hovertemplate=f'{qty_label}: %{{y:.4f}}{qty_unit}<extra></extra>',
+            hovertemplate=(f'%{{x|%H:%M:%S.%L}}<br>{qty_label}: '
+                           f'%{{y:.4f}}{qty_unit}<extra></extra>'),
             showlegend=False,
         ), row=row, col=1)
 
@@ -245,10 +245,14 @@ def build_multi_subplot_graph(
                 line=dict(color='#dc2626', width=3),
             ))
 
-        # 非底部 X 轴完全隐藏：shared_xaxes 仅隐藏刻度标签、仍计算刻度；
-        # visible=False 让 plotly 跳过这些轴的刻度计算与绘制（缩放经 matches 同步）
+        # 非底部 X 轴不显示刻度/网格/轴线，但保持轴可见：visible=False
+        # 会连 hover 竖线（spike）一起禁用，导致悬停竖线缺失
         if row < n:
-            fig.update_xaxes(visible=False, row=row, col=1)
+            fig.update_xaxes(
+                visible=True, showticklabels=False, showgrid=False,
+                zeroline=False, showline=False, ticks='',
+                row=row, col=1,
+            )
 
         # 紧凑 Y 轴：彩色短标题，紧贴轴线，消除大留白
         short_label = qty_info.get('short_label', qty_label[:4])
@@ -294,6 +298,17 @@ def build_multi_subplot_graph(
         col=1,
     )
 
+    # 悬停竖线（spike）逐子图绘制，跨图同步；hoverformat 让逐点悬停标签
+    # 保留完整时间信息（替代已移除的 x unified 顶部悬停框）
+    fig.update_xaxes(
+        showspikes=True,
+        spikemode='across',
+        spikethickness=1,
+        spikecolor='#94a3b8',
+        spikedash='dot',
+        hoverformat='%Y-%m-%d %H:%M:%S.%L',
+    )
+
     # 布局：不设固定 height，由 CSS 容器 + responsive 撑满
     # 标题由外部 graph-title-bar 元素统一管理，Plotly 内置标题不再显示
 
@@ -307,8 +322,16 @@ def build_multi_subplot_graph(
     fig.update_layout(
         title='',
         template='plotly_white',
-        # x unified：悬停时显示竖直参考线，可精确定位当前 X 位置（时间）
-        hovermode='x unified',
+        # hovermode='x'：按 X 位置聚合悬停，但不附加统一悬停框顶部的 X 标签行。
+        # 原 'x unified' 会在顶部自动追加一行完整日期时间（取自 X 轴 hoverformat），
+        # 与各 trace hovertemplate 内的 %{x|%H:%M:%S.%L} 重复显示，故改为 'x'。
+        # 与对比页 comparison_charts 保持一致。
+        hovermode='x',
+        # 深度缩放后相邻点像素间距可超过默认 hoverdistance=20px，悬停位置
+        # 离最近点稍远就找不到数据点（无悬停框、无 spike，且呈概率性）。
+        # -1 = 不限制吸附距离，任意位置悬停都吸附到最近 X 点（活体探针证实）。
+        hoverdistance=-1,
+        spikedistance=-1,
         margin=dict(l=50, r=10, t=30, b=30),
         dragmode='select',
         # 缩放/平移状态跨图重建保持：勾选物理量、框选高亮等触发的重建不再重置视图；

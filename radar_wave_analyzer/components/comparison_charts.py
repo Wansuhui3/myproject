@@ -196,6 +196,10 @@ def build_comparison_subplots(
         title='',
         template='plotly_white',
         hovermode='x',
+        # 深度缩放后点间距可超默认 hoverdistance=20px 导致悬停概率性失效，
+        # -1 = 不限制吸附距离（与波动页保持一致）
+        hoverdistance=-1,
+        spikedistance=-1,
         margin=dict(l=50, r=10, t=30, b=30),
         dragmode='pan',
         shapes=legend_shapes,

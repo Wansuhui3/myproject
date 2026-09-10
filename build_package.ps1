@@ -1,4 +1,4 @@
-# 雷达目标轨迹波动分析系统：可交付发布包构建脚本
+﻿# 雷达目标轨迹波动分析系统：可交付发布包构建脚本
 #
 # 直接运行：双击“打包发布版.cmd”；或执行
 # powershell -ExecutionPolicy Bypass -File .\build_package.ps1
@@ -101,6 +101,15 @@ $PyInstallerArgs = @(
     '--collect-submodules', 'radar_wave_analyzer', '--collect-all', 'dash',
     '--collect-all', 'plotly', '--collect-all', 'dash_bootstrap_components',
     '--collect-all', 'webview', '--collect-all', 'openpyxl', '--hidden-import', 'flask_caching.backends',
+    # 测试与构建工具不进入发布包（运行时无 pytest 依赖）
+    '--exclude-module', 'radar_wave_analyzer.tests',
+    '--exclude-module', 'pytest',
+    # 项目未使用的可选重依赖：matplotlib/PIL 由 plotly 可选图像导出路径
+    # 连带打入（浏览器端渲染不经过它们），matplotlylib 为其适配层
+    '--exclude-module', 'matplotlib',
+    '--exclude-module', 'PIL',
+    '--exclude-module', 'plotly.matplotlylib',
+    '--exclude-module', 'dash.testing',
     $EntryScript
 )
 & $VenvPython @PyInstallerArgs
@@ -109,6 +118,50 @@ if ($LASTEXITCODE -ne 0) { throw 'PyInstaller 打包失败，请查看上方错�
 $AppPackage = Join-Path $DistDir 'RadarWaveAnalyzer'
 $Exe = Join-Path $AppPackage 'RadarWaveAnalyzer.exe'
 if (-not (Test-Path -LiteralPath $Exe)) { throw "未找到打包产物：$Exe" }
+
+Write-Step '清理发布包内未使用的组件数据'
+$AppInternal = Join-Path $AppPackage '_internal'
+
+# --- plotly ---
+# labextension：JupyterLab 扩展，桌面应用不加载
+# graph_objs：--collect-all 产生的纯 .py 数据副本；模块已内嵌于 exe 的 PYZ，
+#   FrozenImporter 优先于磁盘路径加载，磁盘副本为死重（已实测验证）
+# widgetbundle.js：Jupyter anywidget bundle，桌面端不加载
+Remove-Item -LiteralPath (Join-Path $AppInternal 'plotly\labextension') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $AppInternal 'plotly\graph_objs') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $AppInternal 'plotly\package_data\widgetbundle.js') -Force -ErrorAction SilentlyContinue
+
+# --- dash 通用 ---
+# dev bundle 仅 debug 模式使用（_dash_renderer.py 的 dev_package_path），生产用 min.js
+Remove-Item -LiteralPath (Join-Path $AppInternal 'dash\dash-renderer\build\dash_renderer.dev.js') -Force -ErrorAction SilentlyContinue
+# .map 源码映射仅浏览器开发工具使用
+Get-ChildItem (Join-Path $AppInternal 'dash'), (Join-Path $AppInternal 'plotly') -Recurse -Filter *.map -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+# 旧版 React（生产仅引用 @18.3.1，见首页 script 清单；保留 @18.3.1 的 min 与非 min）
+foreach ($v in @('16.14.0', '18.2.0')) {
+    foreach ($lib in @('react', 'react-dom')) {
+        Remove-Item -LiteralPath (Join-Path $AppInternal "dash\deps\$lib@$v.js") -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $AppInternal "dash\deps\$lib@$v.min.js") -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --- dash_table ---
+# 首页仅引用 bundle.js；commons/async/demo/test 均 DataTable 专属且项目不使用。
+# 注意：dash/__init__.py 急切导入 dash_table，其 Python 部分（*.py）必须保留。
+$dt = Join-Path $AppInternal 'dash\dash_table'
+foreach ($f in @('commons.js', 'async-table.js', 'async-export.js', 'async-highlight.js', 'demo.js')) {
+    Remove-Item -LiteralPath (Join-Path $dt $f) -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem $dt -Filter '*_test*.js' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# --- dcc ---
+# 未使用组件的异步 chunk（按需加载，不在首页引用链上）：
+#   mathjax/markdown/datepicker/slider/highlight 均未在项目中使用
+# 保留 async-graph / async-upload / async-dropdown（项目在用）
+$dcc = Join-Path $AppInternal 'dash\dcc'
+foreach ($f in @('async-mathjax.js', 'async-markdown.js', 'async-datepicker.js', 'async-slider.js', 'async-highlight.js')) {
+    Remove-Item -LiteralPath (Join-Path $dcc $f) -Force -ErrorAction SilentlyContinue
+}
+Write-Host '  组件数据裁剪完成'
 
 Write-Step '生成可交付 ZIP'
 Compress-Archive -Path $AppPackage -DestinationPath $ZipFile -CompressionLevel Optimal -Force

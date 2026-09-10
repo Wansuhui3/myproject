@@ -2,10 +2,10 @@
 from radar_wave_analyzer.components.comparison_stats_panel import (
     render_cmp_error_stats,
 )
+from radar_wave_analyzer.components.performance_summary import render_performance_distance_summary
 from radar_wave_analyzer.components.wave_stats_panel import (
     render_wave_snapshot_summary,
 )
-from radar_wave_analyzer.components.performance_summary import render_performance_distance_summary
 
 
 def test_summary_plain_text_skips_snapshot_meta():
@@ -60,7 +60,7 @@ def test_comparison_stats_only_contains_plotted_compatible_quantities():
     labels = [row.children[0].children for row in rows]
     values = [row.children[1].children for row in rows]
 
-    assert labels == ['ΔRangeX RMSE', 'ΔSpeedY RMSE']
+    assert labels == ['RangeX RMSE', 'SpeedY RMSE']
     assert values == ['0.74 m', '0.15 m/s']
     assert all('匹配率' not in label and '延迟' not in label for label in labels)
 

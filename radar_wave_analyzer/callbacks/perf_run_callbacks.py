@@ -6,38 +6,35 @@
 import logging
 
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, no_update, html, ALL
+from dash import ALL, Input, Output, State, callback, html, no_update
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import (
     get_comparison_data,
-    set_alignment_result, set_performance_result,
+    set_alignment_result,
+    set_performance_result,
 )
-
-from ..components.comparison_stats_panel import (
-    render_cmp_error_stats, render_cmp_error_stats_empty,
-)
-
-from ..components.comparison_charts import build_comparison_subplots
-
 from ..comparison.performance import evaluate_all_metrics
-
-from ..components.performance_panel import render_performance_table
-
 from ..comparison.service import (
-    execute_alignment, execute_selected_segments_alignment, resolve_track_selection,
+    execute_alignment,
+    execute_selected_segments_alignment,
+    resolve_track_selection,
 )
-
-from .helpers import _perf_placeholder
+from ..components.comparison_charts import build_comparison_subplots
+from ..components.comparison_stats_panel import (
+    render_cmp_error_stats,
+    render_cmp_error_stats_empty,
+)
+from ..components.performance_panel import render_performance_table
+from ..config import get
 from .cmp_mapping_callbacks import (
+    _append_auto_performance_mappings,
     _cmp_mapping_chart_config,
     _cmp_resolve_mappings,
-    _append_auto_performance_mappings,
 )
 from .cmp_preview_render import _cmp_bins_placeholder
+from .helpers import _perf_placeholder
 from .perf_shared import _parse_segment_key, _perf_summary_source_key
 
 logger = logging.getLogger(__name__)
@@ -178,7 +175,6 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
                 no_update,
                 '合并失败：勾选的段已失效，请重新勾选后再试',
             )
-        track_ids = {str(c.get('track_id')) for c in matched}
         rtk_ids = {c.get('rtk_id') for c in matched}
         if len(rtk_ids) > 1:
             return (
@@ -316,7 +312,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
         ),
         html.Span(' | ', style={'color': '#94a3b8'}),
         html.Span(
-            f"ΔDist RMSE={summary['pos_error_abs']['rmse']}m",
+            f"位置RMSE={summary['pos_error_abs']['rmse']}m",
             className='frame-count',
         ),
     ]

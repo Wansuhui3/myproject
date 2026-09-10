@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 APP_EXPORT_SUBDIR = Path('RadarWaveAnalyzer') / 'exports'
 EXPORT_DIR_ENV = 'RADAR_WAVE_EXPORT_DIR'
 

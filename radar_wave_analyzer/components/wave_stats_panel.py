@@ -61,10 +61,15 @@ def render_multi_full_stats(
     """
     rows = []
 
-    # 首帧距离 = 目标起批（段首帧）时的距离，始终显示（来自全段首帧原始值）
+    # 首帧距离 = 目标起批（段首帧）时的距离。仅渲染当前数据中真实存在
+    # 且有有效值的距离量：数据缺失/全空的列（如 FLR 无 Rx_rear）不再显示
+    # “— m”占位行
     dists = first_frame_dists or {}
     for col in ('Dx', 'Dy', 'Rx_front', 'Rx_rear', 'Ry'):
-        rows.append(_stat_row(f'{col} 首帧距离', _fmt_val(dists.get(col)), 'm'))
+        value = dists.get(col)
+        if value is None:
+            continue
+        rows.append(_stat_row(f'{col} 首帧距离', _fmt_val(value), 'm'))
 
     # 各物理量最大跳变
     qty_rows, has_data = _render_quantity_rows(selected_quantities, quantities_config, stats_per_qty)

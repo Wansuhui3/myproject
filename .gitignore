@@ -17,7 +17,9 @@ release/
 _debug_*.py
 _diag_*.py
 _verify*.py
+_verify/
 _run_build.py
+callback_map.json
 
 # ===== 构建与服务日志 =====
 *_err.txt

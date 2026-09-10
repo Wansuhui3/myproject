@@ -12,12 +12,12 @@ from radar_wave_analyzer.comparison.file_identity import (  # noqa: E402
     compact_filename_label,
     natural_filename_key,
 )
-from radar_wave_analyzer.comparison.parser import load_csv_file  # noqa: E402
 from radar_wave_analyzer.comparison.matching import (  # noqa: E402
     extract_radar_trajectory,
     filter_and_match_ids,
     filter_moving_radar_targets,
 )
+from radar_wave_analyzer.comparison.parser import load_csv_file  # noqa: E402
 from radar_wave_analyzer.comparison.service import (  # noqa: E402
     analyse_selected_track,
     execute_alignment,

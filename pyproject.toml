@@ -1,0 +1,19 @@
+[tool.ruff]
+# 仅做 lint（不做全量 reformat），目标是拦截运行时缺陷类问题并统一导入风格
+line-length = 100
+target-version = "py310"
+exclude = ["build", "dist", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "E4", "E7", "E9",  # pycodestyle 运行时错误级别（未定义名称类）
+    "F",               # pyflakes：F401 未使用导入 / F821 未定义名称 / F811 重复定义
+    "I",               # isort：导入排序统一
+    "G",               # logging：f-string 改为惰性 %s 格式化
+]
+
+[tool.ruff.lint.per-file-ignores]
+# app.py：回调包必须在 app 创建之后导入（extensions 已初始化 cache），E402 属有意为之
+"radar_wave_analyzer/app.py" = ["E402"]
+# 测试辅助：允许 warnings 过滤后导入（E402）；兼容 re-export 允许未使用导入（F401）
+"radar_wave_analyzer/tests/*" = ["E402", "F401"]

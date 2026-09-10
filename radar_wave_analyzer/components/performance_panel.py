@@ -12,7 +12,10 @@ from typing import Optional
 from dash import dcc, html
 
 from ..comparison.performance import (
-    STATUS_FAIL, STATUS_INSUFFICIENT, STATUS_PASS, STATUS_UNDECIDABLE,
+    STATUS_FAIL,
+    STATUS_INSUFFICIENT,
+    STATUS_PASS,
+    STATUS_UNDECIDABLE,
 )
 
 # 状态 → CSS 类名（与 10.3 配色规则对应）

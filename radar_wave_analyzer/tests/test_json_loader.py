@@ -7,7 +7,10 @@ import pytest
 
 from radar_wave_analyzer.comparison.parser import load_data_file  # noqa: E402
 from radar_wave_analyzer.comparison.service import prepare_comparison_upload  # noqa: E402
-from radar_wave_analyzer.core.data_loader import identify_radar_source, parse_epoch_series  # noqa: E402
+from radar_wave_analyzer.core.data_loader import (  # noqa: E402
+    identify_radar_source,
+    parse_epoch_series,
+)
 from radar_wave_analyzer.core.json_loader import (  # noqa: E402
     build_column_normalizer,
     is_json_filename,

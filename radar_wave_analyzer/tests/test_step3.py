@@ -9,8 +9,8 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 # 导入 app（会触发 cache.init_app 和回调注册）
@@ -36,7 +36,7 @@ class TestCacheModule:
 
     def test_set_and_get_df(self, app_ctx):
         """set_data_cache 后能正确取回 df。"""
-        from radar_wave_analyzer.cache import set_data_cache, get_df, clear_data_cache
+        from radar_wave_analyzer.cache import clear_data_cache, get_df, set_data_cache
         clear_data_cache()
         df = pd.DataFrame({'a': [1, 2, 3]})
         meta = pd.DataFrame({'trajectory_id': ['t1']})
@@ -47,7 +47,7 @@ class TestCacheModule:
 
     def test_get_segment(self, app_ctx):
         """单轨迹段能独立缓存与取回。"""
-        from radar_wave_analyzer.cache import set_data_cache, get_segment, clear_data_cache
+        from radar_wave_analyzer.cache import clear_data_cache, get_segment, set_data_cache
         clear_data_cache()
         df = pd.DataFrame({'a': [1, 2, 3]})
         seg1 = pd.DataFrame({'x': [10, 20]})
@@ -60,7 +60,7 @@ class TestCacheModule:
 
     def test_compact_segment_indices_restore_rows_from_canonical_df(self, app_ctx):
         """上传路径只缓存源行号，读取轨迹时仍应恢复正确顺序的数据。"""
-        from radar_wave_analyzer.cache import set_data_cache, get_segment, clear_data_cache
+        from radar_wave_analyzer.cache import clear_data_cache, get_segment, set_data_cache
         clear_data_cache()
         df = pd.DataFrame({'x': [10, 20, 30]})
         segment = pd.DataFrame({
@@ -74,8 +74,13 @@ class TestCacheModule:
 
     def test_clear_cache(self, app_ctx):
         """clear_data_cache 清空所有条目。"""
-        from radar_wave_analyzer.cache import (set_data_cache, get_df, get_segment,
-                                               clear_data_cache, has_data_loaded)
+        from radar_wave_analyzer.cache import (
+            clear_data_cache,
+            get_df,
+            get_segment,
+            has_data_loaded,
+            set_data_cache,
+        )
         clear_data_cache()
         df = pd.DataFrame({'a': [1]})
         set_data_cache('test.csv', 'front', df, pd.DataFrame(), {'t1': df})
@@ -87,7 +92,7 @@ class TestCacheModule:
 
     def test_radar_position(self, app_ctx):
         """雷达位置标识缓存。"""
-        from radar_wave_analyzer.cache import set_data_cache, get_radar_position, clear_data_cache
+        from radar_wave_analyzer.cache import clear_data_cache, get_radar_position, set_data_cache
         clear_data_cache()
         set_data_cache('test.csv', 'rear_corner', pd.DataFrame(), pd.DataFrame(), {})
         assert get_radar_position() == 'rear_corner'
@@ -95,6 +100,7 @@ class TestCacheModule:
     def test_request_sessions_do_not_share_cached_data(self, app_ctx):
         """不同 Flask session 的缓存数据必须完全隔离。"""
         from flask import session
+
         from radar_wave_analyzer.cache import clear_data_cache, get_df, set_data_cache
 
         with _app.server.test_request_context('/'):
@@ -155,11 +161,18 @@ class TestResampler:
 
         assert len(fig.data) == 2
         assert {trace.xaxis for trace in fig.data} == {'x', 'x2'}
-        assert fig.layout.xaxis.visible is False
+        # 上方 X 轴保持可见但无刻度/网格/线（visible=False 会禁用悬停 spike 竖线）
+        assert fig.layout.xaxis.visible is not False
+        assert fig.layout.xaxis.showticklabels is False
+        assert fig.layout.xaxis.showgrid is False
         assert fig.layout.xaxis.matches == 'x2'
-        assert fig.layout.xaxis2.visible is not False
         assert fig.layout.xaxis2.showticklabels is not False
         assert fig.layout.xaxis2.title.text == '时间'
+        # 悬停竖线：spike 全轴开启，逐子图绘制；hovermode='x'
+        # （不用 'x unified'，避免顶部统一头时间与 hovertemplate 时间重复）
+        assert fig.layout.xaxis.showspikes is True
+        assert fig.layout.xaxis2.showspikes is True
+        assert fig.layout.hovermode == 'x'
 
     def test_max_jump_remains_a_single_red_line(self, app_ctx):
         """最大跳变继续使用醒目的红色线段，不增加红色点 trace。"""

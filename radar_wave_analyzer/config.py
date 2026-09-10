@@ -3,12 +3,13 @@
 从 config.yaml 读取配置，提供默认值兜底。
 禁止在代码中硬编码任何配置参数值。
 """
-import sys
 import os
+import sys
 from copy import deepcopy
 from numbers import Real
-import yaml
 from typing import Any
+
+import yaml
 
 # 默认值，与 config.yaml 保持一致
 _DEFAULTS: dict[str, Any] = {
@@ -61,7 +62,7 @@ _DEFAULTS: dict[str, Any] = {
     'WINDOW_TITLE': '雷达目标轨迹波动分析系统',
     'CACHE_TYPE': 'SimpleCache',
     'CACHE_DEFAULT_TIMEOUT': 0,      # 0 = 永不超时
-    'CACHE_THRESHOLD': 200,
+    'CACHE_THRESHOLD': 5000,
     'DISPLAY_DOWNSAMPLING_ENABLED': True,
     # 单条轨迹不超过 5000 帧时完整显示；超过才进入显示降采样。
     'DISPLAY_MAX_POINTS': 5000,

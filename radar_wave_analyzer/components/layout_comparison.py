@@ -1,7 +1,6 @@
 """真值对比页布局：左侧上传/预览/映射/对齐配置 | 中间对比曲线 | 右侧统计与导出。"""
-from dash import dcc, html
 import dash_bootstrap_components as dbc
-
+from dash import dcc, html
 
 # ===================== 真值对比 — 左侧面板 =====================
 
@@ -159,7 +158,7 @@ def build_cmp_center_panel() -> dbc.Col:
                         'displayModeBar': True, 'displaylogo': False,
                         'modeBarButtons': [
                             ['pan2d'],
-                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
+                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d'],
                         ],
                         'responsive': True, 'scrollZoom': True,
                         'doubleClick': 'reset+autosize',

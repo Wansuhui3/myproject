@@ -1,23 +1,53 @@
+import logging
+
+import pandas as pd
 import plotly.graph_objects as go
 from dash import (
     Input,
     Output,
     State,
     callback,
-    no_update,
     html,
+    no_update,
 )
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
-from ..config import get
-from ..cache import set_comparison_data, get_comparison_data, set_alignment_result
-from ..comparison.service import get_candidate_match_result, prepare_comparison_upload
-from .helpers import _decode_upload_contents, _perf_placeholder
-from .cmp_preview_render import _build_cmp_config_with_ids, _cmp_bins_placeholder, _cmp_config_blank, _cmp_no_overlap_note, _cmp_preview_error, _cmp_stats_placeholder, _render_cmp_preview, _render_cmp_waiting_preview
 
-import logging
+from ..cache import get_comparison_data, set_alignment_result, set_comparison_data
+from ..comparison.service import get_candidate_match_result, prepare_comparison_upload
+from ..config import get
+from .cmp_preview_render import (
+    _build_cmp_config_with_ids,
+    _cmp_bins_placeholder,
+    _cmp_config_blank,
+    _cmp_no_overlap_note,
+    _cmp_preview_error,
+    _cmp_stats_placeholder,
+    _render_cmp_preview,
+    _render_cmp_waiting_preview,
+)
+from .helpers import _decode_upload_contents, _perf_placeholder
+
 logger = logging.getLogger(__name__)
 """[C2] 统一上传：解析 + 缓存 + 预览 + ID 发现（单回调，无轮询）。"""
+
+
+def _render_upload_feedback(role_label: str, meta: dict, prefix: str = '') -> html.Div:
+    """上传成功反馈：与波动页同款结构（结果文本行）。"""
+    tr = meta.get('time_range') or [0.0, 0.0]
+    time_text = ''
+    try:
+        t0 = pd.Timestamp(float(tr[0]), unit='s')
+        t1 = pd.Timestamp(float(tr[1]), unit='s')
+        time_text = f' | {t0:%Y-%m-%d %H:%M:%S} ~ {t1:%Y-%m-%d %H:%M:%S}'
+    except (TypeError, ValueError):
+        pass
+    rate = str(meta.get('sample_rate_label') or '')
+    rate_text = f' | {rate}' if rate else ''
+    text = (f'已加载: {meta.get("filename", "")} | '
+            f'{meta.get("total_rows", 0)}行, {meta.get("unique_ids", 0)}个ID'
+            f'{time_text}{rate_text}')
+    return html.Div(text, className='upload-result-text')
 
 
 
@@ -170,11 +200,8 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
     rtk_fb = no_update
     if info is not None:
         meta = side_metas[role]
-        ok_fb = html.Span(
-            f'✓ {role.upper()}: {meta["filename"]} '
-            f'({meta["total_rows"]}行, {meta["unique_ids"]}个ID)',
-            className='feedback-info',
-        )
+        role_label = '雷达' if role == 'radar' else 'RTK真值'
+        ok_fb = _render_upload_feedback(role_label, meta)
         if role == 'radar':
             radar_fb = ok_fb
         else:
@@ -192,11 +219,9 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
     if routed is not None:
         routed_role = routed['role']
         routed_meta = side_metas[routed_role]
-        routed_fb = html.Span(
-            f'✓ {routed_role.upper()} 自动归类: {routed_meta["filename"]} '
-            f'({routed_meta["total_rows"]}行, {routed_meta["unique_ids"]}个ID)',
-            className='feedback-info',
-        )
+        routed_label = '雷达' if routed_role == 'radar' else 'RTK真值'
+        routed_fb = _render_upload_feedback(routed_label, routed_meta,
+                                            prefix='自动归类 · ')
         if routed_role == 'radar':
             radar_fb = routed_fb
         else:

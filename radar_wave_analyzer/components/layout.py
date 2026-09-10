@@ -2,8 +2,8 @@
 
 各页面板的内部结构见 layout_wave.py 与 layout_comparison.py。
 """
-from dash import dcc, html
 import dash_bootstrap_components as dbc
+from dash import dcc, html
 
 from ..config import get
 from .layout_comparison import (
@@ -12,7 +12,6 @@ from .layout_comparison import (
     build_cmp_right_panel,
 )
 from .layout_wave import build_center_panel, build_left_panel, build_right_panel
-
 
 # ===================== 顶部栏 =====================
 

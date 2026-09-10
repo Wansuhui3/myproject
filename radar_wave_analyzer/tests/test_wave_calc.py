@@ -4,7 +4,12 @@ wave_calc 模块单元测试。
 import numpy as np
 import pandas as pd
 import pytest
-from radar_wave_analyzer.core.wave_calc import calc_frame_diff, calc_wave_stats, compute_segment_stats
+
+from radar_wave_analyzer.core.wave_calc import (
+    calc_frame_diff,
+    calc_wave_stats,
+    compute_segment_stats,
+)
 
 
 def _make_ts_series(timestamps: list[str]) -> pd.DatetimeIndex:

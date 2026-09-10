@@ -17,8 +17,6 @@ from flask import has_request_context, session
 
 from .extensions import cache
 
-from .config import get
-
 logger = logging.getLogger(__name__)
 
 _SESSION_ID_KEY = 'radar_wave_cache_session'
@@ -114,8 +112,8 @@ def set_data_cache(
         compact_segments = segments
     cache.set(f'{prefix}segments', compact_segments)
     logger.info(
-        f'缓存已写入 [{radar_position}]: {len(df)}行, '
-        f'{len(meta_df)}段, {len(segments)}个轨迹段'
+        '缓存已写入 [%s]: %s行, %s段, %s个轨迹段',
+        radar_position, len(df), len(meta_df), len(segments),
     )
 
 
@@ -230,7 +228,7 @@ def set_comparison_data(key: str, radar_df, rtk_df):
         cache.set(_comparison_key(key, 'rtk_df'), rtk_df)
     r_len = len(radar_df) if radar_df is not None else 0
     t_len = len(rtk_df) if rtk_df is not None else 0
-    logger.info(f'对比数据已缓存 [{key}]: radar={r_len}行, rtk={t_len}行')
+    logger.info('对比数据已缓存 [%s]: radar=%s行, rtk=%s行', key, r_len, t_len)
 
 
 def get_comparison_data(key: str):

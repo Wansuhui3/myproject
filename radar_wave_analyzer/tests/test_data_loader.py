@@ -1,10 +1,15 @@
 """
 data_loader 模块单元测试。
 """
-from radar_wave_analyzer.core.data_loader import identify_radar_source, parse_timestamp, parse_timestamp_series, load_csv
-
 import pandas as pd
 import pytest
+
+from radar_wave_analyzer.core.data_loader import (
+    identify_radar_source,
+    load_csv,
+    parse_timestamp,
+    parse_timestamp_series,
+)
 
 
 def test_identify_front_and_rear_radar_from_filename():

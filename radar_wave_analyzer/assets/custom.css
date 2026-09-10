@@ -223,6 +223,19 @@ body {
     color: #92400e;
 }
 
+/* 对比页上传反馈的角色徽章（与波动页来源徽章同款胶囊样式） */
+.radar-source-radar {
+    border-color: #93c5fd;
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.radar-source-rtk {
+    border-color: #6ee7b7;
+    background: #d1fae5;
+    color: #047857;
+}
+
 .upload-source-result {
     color: #15803d;
     font-weight: 500;
@@ -1634,6 +1647,7 @@ body {
 }
 
 .perf-table th {
+    text-align: center;
     white-space: nowrap;
 }
 

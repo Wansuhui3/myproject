@@ -4,7 +4,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
 _DEFAULTS = {
     'enabled': True,
     'min_frames': 3,

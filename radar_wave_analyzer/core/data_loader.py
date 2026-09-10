@@ -250,7 +250,7 @@ def load_csv_from_bytes(
     import io
     actual_chunk_size = chunk_size or _configured_chunk_size(len(content_bytes))
     df = _read_and_preprocess_csv(io.BytesIO(content_bytes), actual_chunk_size)
-    logger.info(f'从内存加载: {filename or "<upload>"}')
+    logger.info('从内存加载: %s', filename or '<upload>')
     return df
 
 
@@ -276,7 +276,7 @@ def _preprocess_csv(
     before = len(df)
     df = df.dropna(subset=_REQUIRED_COLUMNS)
     if len(df) < before:
-        logger.info(f'剔除 {before - len(df)} 行空值/NaN 数据')
+        logger.info('剔除 %s 行空值/NaN 数据', before - len(df))
 
     # Track_Age 必须是 0~255 的整数。不能直接 astype(int)：它会把 12.7
     # 静默截断为 12，使非法帧参与分段并改变轨迹边界。
@@ -287,7 +287,7 @@ def _preprocess_csv(
     invalid_mask = ~in_range_age
 
     if invalid_mask.any():
-        logger.warning(f'标记 {invalid_mask.sum()} 行 Track_Age 异常数据，将跳过')
+        logger.warning('标记 %s 行 Track_Age 异常数据，将跳过', invalid_mask.sum())
         df = df[~invalid_mask].copy()
 
     # 在完成校验后再转换，保证 Track_Age 的语义始终是 uint8 整数。
@@ -309,7 +309,8 @@ def _finalize_preprocessed(df: pd.DataFrame) -> pd.DataFrame:
     """在所有数据块清洗完成后执行唯一的全局排序与加载日志。"""
     # 全局按时间排序（不能先分组再排序）
     df = df.sort_values('timestamp_parsed').reset_index(drop=True)
-    logger.info(f'加载完成: {len(df)} 行有效数据, {df["ID"].nunique()} 个唯一 ID')
+    logger.info('加载完成: %s 行有效数据, %s 个唯一 ID',
+                len(df), df['ID'].nunique())
     return df
 
 
@@ -343,9 +344,9 @@ def filter_by_time_window(
     end = center_ts + pd.Timedelta(seconds=window_sec)
     result = df[(df['timestamp_parsed'] >= start) & (df['timestamp_parsed'] <= end)].copy()
     logger.info(
-        f'时间窗口: center={center_ts}, window=±{window_sec}s, '
-        f'range=[{start}, {end}], matched={len(result)} rows, '
-        f'full_df={len(df)} rows, t_min={df["timestamp_parsed"].min()}, '
-        f't_max={df["timestamp_parsed"].max()}'
+        '时间窗口: center=%s, window=±%ss, range=[%s, %s], matched=%s rows, '
+        'full_df=%s rows, t_min=%s, t_max=%s',
+        center_ts, window_sec, start, end, len(result), len(df),
+        df['timestamp_parsed'].min(), df['timestamp_parsed'].max(),
     )
     return result

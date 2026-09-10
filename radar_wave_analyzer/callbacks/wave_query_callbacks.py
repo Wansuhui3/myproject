@@ -5,25 +5,24 @@
 import logging
 
 import plotly.graph_objects as go
-from dash import Input, Output, State, callback, no_update, html
+from dash import Input, Output, State, callback, html, no_update
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import (
-    get_df, get_meta_df, get_radar_position, get_segment,
     clear_data_cache,
+    get_df,
+    get_meta_df,
+    get_radar_position,
+    get_segment,
 )
-
-from ..core.data_loader import parse_timestamp
-
-from ..components.wave_stats_panel import (
-    render_multi_full_stats, render_multi_full_stats_placeholder,
-    render_box_stats_empty,
-)
-
 from ..components.graph_builder import build_multi_subplot_graph
-
+from ..components.wave_stats_panel import (
+    render_box_stats_empty,
+    render_multi_full_stats,
+    render_multi_full_stats_placeholder,
+)
+from ..config import get
+from ..core.data_loader import parse_timestamp
 from .wave_helpers import (
     _compute_quantities_stats,
     _discover_quantity_columns,
@@ -65,9 +64,8 @@ logger = logging.getLogger(__name__)
 def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
     if not data_loaded or get_meta_df() is None:
         logger.warning(
-            f'on_timestamp_input: skipped — data_loaded={data_loaded}, '
-            f'has_meta={get_meta_df() is not None}, '
-            f'radar={get_radar_position()}'
+            'on_timestamp_input: skipped — data_loaded=%s, has_meta=%s, radar=%s',
+            data_loaded, get_meta_df() is not None, get_radar_position(),
         )
         raise PreventUpdate
 
@@ -87,7 +85,8 @@ def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
     meta_df = get_meta_df()
     if df is None or meta_df is None:
         logger.error(
-            f'on_timestamp_input: df={df is not None}, meta_df={meta_df is not None} — both must exist'
+            'on_timestamp_input: df=%s, meta_df=%s — both must exist',
+            df is not None, meta_df is not None,
         )
         raise PreventUpdate
 
@@ -119,8 +118,9 @@ def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
 
             if first_seg_df is None:
                 logger.warning(
-                    f'on_timestamp_input: get_segment returned None for '
-                    f'traj={first_traj_id}, nearest_id={nearest_id}'
+                    'on_timestamp_input: get_segment returned None for '
+                    'traj=%s, nearest_id=%s',
+                    first_traj_id, nearest_id,
                 )
 
             if first_seg_df is not None:
@@ -145,8 +145,8 @@ def on_timestamp_input(ts_input: str, data_loaded: bool, selected_qties):
 
     # fallback: 有ID列表但无法绘制图表（缓存丢失或段不存在）
     logger.warning(
-        f'on_timestamp_input: nearest_id={nearest_id} 段数据缺失, '
-        f'radar={get_radar_position()}'
+        'on_timestamp_input: nearest_id=%s 段数据缺失, radar=%s',
+        nearest_id, get_radar_position(),
     )
     return (list_children, str(len(list_children)), feedback,
             None, no_update, no_update, no_update, '', no_update, None, None, nearest_id)

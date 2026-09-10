@@ -7,22 +7,20 @@
 from dash import Input, Output, State, callback, html
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import (
-    get_df, get_meta_df, get_file_path,
+    get_df,
+    get_file_path,
+    get_meta_df,
     switch_radar,
 )
-
-from ..core.data_loader import get_time_range
-
 from ..components.wave_stats_panel import (
-    render_multi_full_stats_placeholder,
     render_box_stats_empty,
+    render_multi_full_stats_placeholder,
 )
-
-from .wave_views import _build_id_list_html
+from ..config import get
+from ..core.data_loader import get_time_range
 from .wave_upload_pipeline import build_upload_caches, parse_upload_payloads
+from .wave_views import _build_id_list_html
 
 
 # ============================================================
@@ -198,29 +196,15 @@ def on_upload_csv(contents_list, filenames, radar_key):
 
     t_min, t_max = get_time_range(merged_df)
     err_suffix = f'（部分失败: {"；".join(errors)}）' if errors else ''
-    source_badges = []
-    for info in source_files.values():
-        source_class = (
-            f'radar-source-{info["key"]}' if info['recognized']
-            else 'radar-source-unknown'
-        )
-        source_badges.append(html.Span(
-            f'{info["short_label"]} · {len(info["filenames"])}个文件',
-            className=f'radar-source-badge {source_class}',
-            title='\n'.join(info['filenames']),
-        ))
     unknown_warning = ''
     if any(not info['recognized'] for info in source_files.values()):
         unknown_warning = ' | ⚠ 有文件未识别来源，请检查文件名（支持 FLR/RLR）'
-    feedback = html.Div([
-        html.Div(source_badges, className='radar-source-summary'),
-        html.Div(
-            f'已加载: {upload_label} | {len(merged_df)}行, {len(meta_df)}段 | '
-            f'{t_min.strftime("%Y-%m-%d %H:%M:%S")} ~ '
-            f'{t_max.strftime("%Y-%m-%d %H:%M:%S")}{unknown_warning} {err_suffix}',
-            className='upload-result-text',
-        ),
-    ], className='upload-source-result')
+    feedback = html.Div(
+        f'已加载: {upload_label} | {len(merged_df)}行, {len(meta_df)}段 | '
+        f'{t_min.strftime("%Y-%m-%d %H:%M:%S")} ~ '
+        f'{t_max.strftime("%Y-%m-%d %H:%M:%S")}{unknown_warning} {err_suffix}',
+        className='upload-result-text',
+    )
 
     # 上传成功后直接显示全部目标ID
     active_df = get_df()

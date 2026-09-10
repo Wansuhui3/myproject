@@ -8,31 +8,30 @@ import logging
 
 import numpy as np
 import pandas as pd
-from dash import Input, Output, State, Patch, callback, no_update, ALL
+from dash import ALL, Input, Output, Patch, State, callback, no_update
 from dash import ctx as dash_ctx
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import (
-    get_df, get_meta_df, get_segment, has_data_loaded,
+    get_df,
+    get_meta_df,
+    get_segment,
+    has_data_loaded,
 )
-
-from ..core.selection import extract_x_selection
-
-from ..core.wave_calc import find_max_jump
-
-from ..components.wave_stats_panel import (
-    render_multi_full_stats,
-    render_multi_box_stats, render_box_stats_empty,
-    render_wave_snapshot_summary,
-)
-
 from ..components.graph_builder import (
     build_box_jump_shapes,
-    build_highlight_shapes, build_multi_subplot_graph,
+    build_highlight_shapes,
+    build_multi_subplot_graph,
 )
-
+from ..components.wave_stats_panel import (
+    render_box_stats_empty,
+    render_multi_box_stats,
+    render_multi_full_stats,
+    render_wave_snapshot_summary,
+)
+from ..config import get
+from ..core.selection import extract_x_selection
+from ..core.wave_calc import find_max_jump
 from .helpers import _summary_plain_text
 from .wave_helpers import (
     _compute_quantities_stats,
@@ -314,6 +313,11 @@ def on_box_select(selected_data, traj_id, selected_qties, current_figure):
         highlight_shapes + box_jump_shapes
         + _get_non_highlight_shapes(current_figure)
     )
+    # 移除 plotly 框选拖拽自动创建的原生虚线选框（layout.selections）：
+    # 其顶层 selectionlayer path 会拦截选区内的鼠标事件，导致框内
+    # 悬停无数据、无 spike 竖线（真实鼠标实验证实，删除后立即恢复）。
+    # 自绘橙色高亮矩形（shapes）不受影响。
+    figure_patch['layout']['selections'] = []
 
     feedback = f'已选 {len(masked_df)} 帧 [{start_idx}–{end_idx}]'
 
@@ -354,8 +358,6 @@ def on_clear_box_select(_n, traj_id, selected_qties, current_box, current_figure
     seg_df = get_segment(traj_id)
     if seg_df is None:
         raise PreventUpdate
-
-    valid_qties = _ensure_valid_quantities(seg_df, selected_qties)
 
     # 仅删除矩形高亮，保留图表自身的线形标注。
     figure_patch = Patch()

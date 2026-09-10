@@ -6,18 +6,15 @@ import logging
 import os
 
 import pandas as pd
-from dash import Input, Output, State, callback, no_update, dcc
+from dash import Input, Output, State, callback, dcc, no_update
 from dash.exceptions import PreventUpdate
 
-from ..config import get
-
 from ..cache import get_alignment_result, get_performance_result
-
 from ..comparison.exporter import (
     derive_quantity_pairs,
     export_comparison_workbook_bytes,
 )
-
+from ..config import get
 from .perf_shared import _selected_radar_filename
 
 logger = logging.getLogger(__name__)

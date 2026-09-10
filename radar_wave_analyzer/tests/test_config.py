@@ -3,7 +3,11 @@ from copy import deepcopy
 
 import pytest
 
-from radar_wave_analyzer.config import ConfigValidationError, _DEFAULTS, _validate_config  # noqa: E402
+from radar_wave_analyzer.config import (  # noqa: E402
+    _DEFAULTS,
+    ConfigValidationError,
+    _validate_config,
+)
 
 
 def test_default_configuration_is_valid():

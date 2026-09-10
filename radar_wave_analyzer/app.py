@@ -3,10 +3,9 @@ Dash 应用入口 + 布局定义。
 app 实例来自 extensions.py（含 assets_folder 配置），此处仅挂载布局和回调。
 """
 # 导入已配置好的 Dash 实例（包含 assets_folder、cache 等）
-from .extensions import app
-
 # 构建布局
 from .components.layout import build_layout
+from .extensions import app
 
 app.layout = build_layout()
 

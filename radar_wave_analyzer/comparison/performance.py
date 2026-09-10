@@ -37,13 +37,13 @@ from ..config import get
 # ── 兼容 re-export：test_performance.py、performance_panel.py、
 #    performance_summary.py、exporter.py 均从本模块路径导入以下名称 ──
 from .performance_common import (  # noqa: F401
+    _RADAR_COL_CANDIDATES,
+    _TRUTH_COL_CANDIDATES,
+    _TRUTH_DISTANCE_COL,
     STATUS_FAIL,
     STATUS_INSUFFICIENT,
     STATUS_PASS,
     STATUS_UNDECIDABLE,
-    _RADAR_COL_CANDIDATES,
-    _TRUTH_COL_CANDIDATES,
-    _TRUTH_DISTANCE_COL,
     _assign_bins,
     _compute_continuity_breaks,
     _resolve_column,
@@ -56,7 +56,6 @@ from .performance_metric import (  # noqa: F401
     _summarize_overall,
     evaluate_metric,
 )
-
 
 # ============================================================
 # 批量入口

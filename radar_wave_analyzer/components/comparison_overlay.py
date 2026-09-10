@@ -274,11 +274,9 @@ def _build_overlay_subplot(
         curve_valid = curve_values.notna()
         rtk_x = np.asarray(rtk_curve_timestamps)[curve_valid]
         rtk_values = curve_values[curve_valid].to_numpy()
-        rtk_labels = np.asarray(rtk_curve_time_labels)[curve_valid]
     else:
         rtk_x = x_valid
         rtk_values = t_valid
-        rtk_labels = rtk_time_valid
 
     fig.add_trace(go.Scatter(
         x=rtk_x, y=rtk_values,

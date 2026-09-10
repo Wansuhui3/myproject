@@ -5,9 +5,8 @@
 - 中间（7/12）：物理量多选 Checklist + 纵向堆叠子图（共享X轴）
 - 右侧（3/12）：全段统计卡 + 选中区域统计卡 + 波动摘要卡
 """
-from dash import dcc, html
 import dash_bootstrap_components as dbc
-
+from dash import dcc, html
 
 # ===================== 左侧面板 =====================
 
@@ -122,7 +121,7 @@ def build_center_panel() -> dbc.Col:
                         'displayModeBar': True, 'displaylogo': False,
                         'modeBarButtons': [
                             ['select2d', 'pan2d'],
-                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d', 'resetScale2d'],
+                            ['zoomIn2d', 'zoomOut2d', 'autoScale2d'],
                         ],
                         'responsive': True, 'scrollZoom': True,
                         'doubleClick': 'reset+autosize',
