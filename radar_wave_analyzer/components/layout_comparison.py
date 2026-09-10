@@ -11,7 +11,6 @@ def build_cmp_left_panel() -> dbc.Col:
         html.Div([
             html.Div('数据文件', className='app-card-title'),
             # 雷达文件上传（包装容器，模式切换时由回调强制刷新以修复WebView2事件丢失）
-            html.Div('雷达CSV/JSON', style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px', 'marginTop': '8px'}),
             html.Div(id='cmp-upload-radar-container', children=[
                 dcc.Upload(
                     id='cmp-upload-radar',
@@ -27,7 +26,6 @@ def build_cmp_left_panel() -> dbc.Col:
             ]),
             html.Div(id='cmp-upload-radar-feedback', className='feedback-muted mt-1'),
             # RTK文件上传（包装容器，模式切换时由回调强制刷新以修复WebView2事件丢失）
-            html.Div('RTK真值CSV/JSON', style={'fontSize': '12px', 'color': '#64748b', 'marginBottom': '4px', 'marginTop': '12px'}),
             html.Div(id='cmp-upload-rtk-container', children=[
                 dcc.Upload(
                     id='cmp-upload-rtk',

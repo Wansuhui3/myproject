@@ -1,7 +1,7 @@
 """波动分析页布局：左侧控制面板 | 中间图表区 | 右侧统计面板。
 
 结构：
-- 左侧（2/12）：时间筛选卡 / 目标ID列表 / 轨迹段卡
+- 左侧（2/12）：数据文件卡 / 目标ID列表 / 轨迹段卡
 - 中间（7/12）：物理量多选 Checklist + 纵向堆叠子图（共享X轴）
 - 右侧（3/12）：全段统计卡 + 选中区域统计卡 + 波动摘要卡
 """
@@ -11,9 +11,9 @@ from dash import dcc, html
 # ===================== 左侧面板 =====================
 
 def build_time_filter_card() -> html.Div:
-    """时间筛选卡。"""
+    """数据文件卡。"""
     return html.Div([
-        html.Div('时间筛选', className='app-card-title'),
+        html.Div('数据文件', className='app-card-title'),
         dcc.Loading(
             id='loading-upload',
             type='circle',

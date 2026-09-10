@@ -59,7 +59,7 @@ _DEFAULTS: dict[str, Any] = {
         'Ry': {'label': 'Ry', 'unit': 'm'},
     },
     'EXPORT_ENCODING': 'utf-8-sig',
-    'WINDOW_TITLE': '雷达目标轨迹波动分析系统',
+    'WINDOW_TITLE': 'RadarWaveAnalyzer',
     'CACHE_TYPE': 'SimpleCache',
     'CACHE_DEFAULT_TIMEOUT': 0,      # 0 = 永不超时
     'CACHE_THRESHOLD': 5000,

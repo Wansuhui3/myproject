@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 8050
-WINDOW_TITLE = '雷达目标轨迹波动分析系统'
+WINDOW_TITLE = 'RadarWaveAnalyzer'
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
@@ -49,7 +49,7 @@ border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite;ma
 @keyframes spin{to{transform:rotate(360deg)}}
 .title{color:#e2e8f0;font-size:20px;font-weight:600;margin-bottom:8px}
 .sub{color:#94a3b8;font-size:14px}</style></head><body>
-<div class="spinner"></div><div class="title">雷达目标轨迹波动分析系统</div>
+<div class="spinner"></div><div class="title">RadarWaveAnalyzer</div>
 <div class="sub">正在初始化，请稍候...</div></body></html>"""
 
 

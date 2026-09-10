@@ -39,7 +39,7 @@ app = dash.Dash(
     assets_folder=_get_assets_folder(),
     external_stylesheets=[LOCAL_BOOTSTRAP],
     suppress_callback_exceptions=True,
-    title=get('WINDOW_TITLE', '雷达目标轨迹波动分析系统'),
+    title=get('WINDOW_TITLE', 'RadarWaveAnalyzer'),
 )
 
 # 初始化 flask-caching（绑定到 Dash 底层 Flask server）

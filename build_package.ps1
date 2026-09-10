@@ -1,4 +1,4 @@
-﻿# 雷达目标轨迹波动分析系统：可交付发布包构建脚本
+﻿# RadarWaveAnalyzer：可交付发布包构建脚本
 #
 # 直接运行：双击“打包发布版.cmd”；或执行
 # powershell -ExecutionPolicy Bypass -File .\build_package.ps1
@@ -65,7 +65,7 @@ function Invoke-BasePython([string[]]$Arguments) {
 if (-not (Test-Path -LiteralPath $EntryScript)) { throw "找不到启动文件：$EntryScript" }
 if (-not (Test-Path -LiteralPath $Requirements)) { throw "找不到依赖文件：$Requirements" }
 
-Write-Host '雷达目标轨迹波动分析系统 - 发布包构建器' -ForegroundColor Green
+Write-Host 'RadarWaveAnalyzer - 发布包构建器' -ForegroundColor Green
 Write-Host "项目目录：$ProjectRoot"
 $PythonCommand = Find-Python
 $PythonExe = $PythonCommand[0]

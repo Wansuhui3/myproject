@@ -1,4 +1,4 @@
-# 雷达目标轨迹波动分析系统 — 运行时依赖
+# RadarWaveAnalyzer — 运行时依赖
 pandas>=1.5.0
 numpy>=1.23.0
 scipy>=1.10.0
