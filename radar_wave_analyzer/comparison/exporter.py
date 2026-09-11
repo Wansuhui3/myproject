@@ -335,28 +335,50 @@ def _write_workbook(
             pd.to_numeric(fr.get('continuity_break'), errors='coerce').fillna(0)
             .to_numpy(dtype=int) if 'continuity_break' in fr else None)
 
+        # ── 预取列数据到 Python 列表 ──
+        # 明细循环逐帧执行，循环内 Series.iloc 标量索引的 pandas 开销会随
+        # 行数线性放大（实测为生成耗时主因之一）；预转列表后循环仅做下标访问。
+        def _rows(name):
+            return fr[name].tolist() if name in fr else None
+
+        ts_list = _rows('timestamp')
+        radar_list = _rows('radar_value')
+        truth_list = _rows('truth_value')
+        distance_list = _rows('truth_distance')
+        three_limit_list = _rows('three_frame_limit')
+        normal_pass_list = _rows('normal_pass')
+        violation_list = _rows('three_frame_violation')
+        rtk_ts_list = (rtk_ts_all.tolist()
+                       if rtk_ts_all is not None and same_len else None)
+        time_diff_list = (time_diff_all.tolist()
+                          if time_diff_all is not None and same_len else None)
+        bin_idx_list = bin_idx.tolist()
+
         prev_bi = None
+        fail_rows: list[int] = []
+        violation_rows: list[int] = []
         for offset, i in enumerate(row_positions):
             r = first + offset
-            bi = int(bin_idx.iloc[i]) if pd.notna(bin_idx.iloc[i]) else -1
+            bi_value = bin_idx_list[i]
+            bi = int(bi_value) if pd.notna(bi_value) else -1
             limit_rule = (rule_bins[bi].get('normal_limit')
                           if is_binned and 0 <= bi < len(rule_bins) else None)
             threshold = _limit_excel(limit_rule, basis_col, r)
             if threshold is None:
                 threshold = _py(limits[i])
-            violation = bool(fr['three_frame_violation'].iloc[i]) \
-                if 'three_frame_violation' in fr else False
-            normal_pass = bool(fr['normal_pass'].iloc[i]) \
-                if 'normal_pass' in fr else True
+            violation = (bool(violation_list[i])
+                         if violation_list is not None else False)
+            normal_pass = (bool(normal_pass_list[i])
+                           if normal_pass_list is not None else True)
             is_break = bool(breaks_series[i]) if breaks_series is not None else False
             if is_binned:
                 dist_label = label_map.get(bi)
             else:
                 dist_label = label_map.get(-1, '完整曲线')
-            rtk_ts = (_fmt_epoch_ts(rtk_ts_all.iloc[i])
-                      if rtk_ts_all is not None and same_len else '')
-            time_diff = (_py(time_diff_all.iloc[i])
-                         if time_diff_all is not None and same_len else None)
+            rtk_ts = (_fmt_epoch_ts(rtk_ts_list[i])
+                      if rtk_ts_list is not None else '')
+            time_diff = (_py(time_diff_list[i])
+                         if time_diff_list is not None else None)
 
             # ── 三帧违规（Excel 活公式，binned 模式）──
             # 违规 = 连续三帧归一化最小值 MIN(K前, K本, K后) ≥ 1，内联公式，
@@ -388,16 +410,16 @@ def _write_workbook(
                     f'*($G${first}:$G${last})^2)/COUNTIF($M${first}:$M${last},M{r}))')
 
             ws.append([
-                str(fr['timestamp'].iloc[i]) if 'timestamp' in fr else '',
-                _py(fr['radar_value'].iloc[i]),
+                str(ts_list[i]) if ts_list is not None else '',
+                _py(radar_list[i]) if radar_list is not None else None,
                 rtk_ts,
-                _py(fr['truth_value'].iloc[i]),
+                _py(truth_list[i]) if truth_list is not None else None,
                 time_diff,
-                _py(fr['truth_distance'].iloc[i]),
+                _py(distance_list[i]) if distance_list is not None else None,
                 f'=ABS(B{r}-D{r})',
                 threshold,
                 f'=IF(G{r}<H{r},"✓","✗")',
-                _py(fr['three_frame_limit'].iloc[i]),
+                _py(three_limit_list[i]) if three_limit_list is not None else None,
                 f'=IF(J{r}=0,"",G{r}/J{r})',
                 violation_formula,
                 dist_label,
@@ -408,16 +430,22 @@ def _write_workbook(
             # 不合格帧：误差/阈值/判定三格红字；违规帧：三帧违规格红字
             # （按后端判定结果，公式列保存后读不到计算值，无法事后判断）
             if not normal_pass:
-                for col in (7, 8, 9):
-                    ws.cell(row=r, column=col).font = red_font
+                fail_rows.append(r)
             if violation:
-                ws.cell(row=r, column=12).font = red_font
+                violation_rows.append(r)
             prev_bi = bi
 
         ws.freeze_panes = f'A{first}'
         ws.auto_filter.ref = f'A{header_row}:O{last}'
-        for r in range(first, last + 1):
-            ws.cell(row=r, column=15).number_format = '0.00%'
+        # 着色与数字格式在逐帧循环结束后统一处理，避免热循环内反复查找单元格
+        for r in fail_rows:
+            for col in (7, 8, 9):
+                ws.cell(row=r, column=col).font = red_font
+        for r in violation_rows:
+            ws.cell(row=r, column=12).font = red_font
+        for (cell,) in ws.iter_rows(min_row=first, max_row=last,
+                                    min_col=15, max_col=15):
+            cell.number_format = '0.00%'
         widths = [22, 12, 22, 12, 10, 10, 10, 12, 9, 10, 11, 9, 12, 12, 10]
         for col_idx, width in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(col_idx)].width = width

@@ -19,6 +19,11 @@ import webview
 
 logger = logging.getLogger(__name__)
 
+# pywebview 默认禁止 WebView2 下载（ALLOW_DOWNLOADS=False）。导出 CSV/Excel 时
+# 下载会被直接取消——既不弹系统“另存为”对话框也不落盘，表现为点击导出无反应。
+# 开启后 pywebview 会在下载开始时弹出原生保存对话框，由用户选择保存路径。
+webview.settings['ALLOW_DOWNLOADS'] = True
+
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 8050
 WINDOW_TITLE = 'RadarWaveAnalyzer'

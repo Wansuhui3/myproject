@@ -30,12 +30,13 @@ logger = logging.getLogger(__name__)
     prevent_initial_call=True,
 )
 def on_cmp_export_workbook(_n, state):
-    """导出最近一次执行对齐的数据为 xlsx 工作簿（浏览器下载）。
+    """导出最近一次执行对齐的数据为 xlsx 工作簿（本地保存）。
 
     默认文件名 = 数据来源的雷达 CSV 文件名（去扩展名）+ 对齐 ID，
-    如 ``CD701_flr_track_2026_08_11_15_57_24_ID3.xlsx``。下载动作由
-    浏览器处理：若浏览器开启“每次下载前询问保存位置”即可自选路径，
-    且不占用服务端文件，Excel 打开旧文件也不影响再次导出。
+    如 ``CD701_flr_track_2026_08_11_15_57_24_ID3.xlsx``。桌面端由
+    pywebview 弹出系统“另存为”对话框选择保存路径（依赖 launcher 中
+    开启的 ALLOW_DOWNLOADS）；浏览器端则走浏览器下载。导出不占用
+    服务端文件，Excel 打开旧文件也不影响再次导出。
     """
     if not _n or not state or not state.get('alignment_done'):
         raise PreventUpdate
@@ -79,4 +80,4 @@ def on_cmp_export_workbook(_n, state):
 
     data = dcc.send_bytes(
         lambda buf: buf.write(content), filename=default_name)
-    return data, f'已生成 {default_name}，浏览器正在下载'
+    return data, f'已生成 {default_name}，请选择保存位置'

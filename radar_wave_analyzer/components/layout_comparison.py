@@ -210,9 +210,17 @@ def build_cmp_right_panel() -> dbc.Col:
         ),
         html.Div([
             html.Div('导出', className='app-card-title'),
-            html.Button('导出CSV', id='cmp-export-csv-btn', n_clicks=0,
-                        className='export-btn'),
-            dcc.Download(id='cmp-export-download'),
-            html.Div(id='cmp-export-feedback', className='feedback-muted mt-2'),
+            dcc.Loading(
+                id='cmp-loading-export', type='circle', color='#3b82f6',
+                # 工作簿在服务端同步生成，耗时随帧数与物理量数线性增长；
+                # Loading 让生成期间有明确反馈（原实现点击后界面无任何响应）。
+                children=html.Div([
+                    html.Button('导出数据', id='cmp-export-csv-btn', n_clicks=0,
+                                className='export-btn'),
+                    dcc.Download(id='cmp-export-download'),
+                    html.Div(id='cmp-export-feedback',
+                             className='feedback-muted mt-2'),
+                ], className='export-btn-row'),
+            ),
         ], className='export-card'),
     ], width=3, className='side-panel right-panel')
