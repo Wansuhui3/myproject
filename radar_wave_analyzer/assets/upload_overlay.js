@@ -4,15 +4,17 @@
  * 目标：在用户「选定文件 / 拖放落下」的瞬间立即显示全屏遮罩动画，
  * 早于 dcc.Upload 的 base64 编码与服务端回调，提供严格同步的视觉反馈。
  *
- * 关闭由 callbacks.py 中的客户端回调在 store-data-loaded / cmp-state 变化时调用
- * window.hideUploadOverlay() 完成；此处另设安全超时强制隐藏。
+ * 关闭由 callbacks.py 中的客户端回调在 upload-tick / store-data-loaded /
+ * cmp-state 变化时调用 window.hideUploadOverlay() 完成；其中 upload-tick
+ * 每次上传回调结束都会写入新值，即使上传失败也能可靠解除遮罩。
+ * 此处另设安全超时强制隐藏，作为回调未触发（如重复选择同一文件）时的兜底。
  */
 (function () {
   'use strict';
 
   var overlay = null;
   var hideTimer = null;
-  var SAFETY_TIMEOUT_MS = 60000; // 异常卡死兜底
+  var SAFETY_TIMEOUT_MS = 20000; // 异常卡死兜底（回调未触发时最长等待）
 
   function getOverlay() {
     if (!overlay) {

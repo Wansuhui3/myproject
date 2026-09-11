@@ -18,6 +18,19 @@ def _decode_upload_contents(contents) -> bytes:
         raise ValueError(f'文件解码失败: {e}') from e
 
 
+# 上传组件允许的扩展名（与 dcc.Upload 的 accept 保持一致）
+SUPPORTED_UPLOAD_SUFFIXES = ('.csv', '.json')
+
+
+def is_supported_upload(filename) -> bool:
+    """上传前置校验：仅接受 .csv / .json（大小写不敏感）。
+
+    前端 accept 只约束文件对话框，拖拽仍可绕过；在此统一拦截，
+    使不支持的类型在上传回调入口即被明确拒绝，不会进入解析路径。
+    """
+    return str(filename or '').strip().lower().endswith(SUPPORTED_UPLOAD_SUFFIXES)
+
+
 def _perf_placeholder(message: str = '执行对齐后显示'):
     """性能验收表面板占位输出（对齐失败/空数据时）。"""
     return html.Div(message, className='stats-empty')

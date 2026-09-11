@@ -4,6 +4,9 @@
 交互域回调（ID 点击、框选、摘要快照）见 wave_callbacks；
 上传解析/合并/分段的纯数据管线见 wave_upload_pipeline。
 """
+import logging
+import time
+
 from dash import Input, Output, State, callback, html
 from dash.exceptions import PreventUpdate
 
@@ -19,8 +22,11 @@ from ..components.wave_stats_panel import (
 )
 from ..config import get
 from ..core.data_loader import get_time_range
+from .helpers import is_supported_upload
 from .wave_upload_pipeline import build_upload_caches, parse_upload_payloads
 from .wave_views import _build_id_list_html
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -140,13 +146,21 @@ def on_radar_change_clear(radar_key: str):
     Output('store-selected-trajectory', 'data', allow_duplicate=True),
     Output('store-selected-id', 'data', allow_duplicate=True),
     Output('store-box-selection', 'data', allow_duplicate=True),
+    # 每次上传结束（成功或失败）都写入新时间戳，供前端可靠解除加载遮罩
+    Output('upload-tick', 'data', allow_duplicate=True),
     Input('upload-csv', 'contents'),
     State('upload-csv', 'filename'),
     State('radar-selector', 'value'),
     prevent_initial_call=True,
 )
 def on_upload_csv(contents_list, filenames, radar_key):
-    """拖拽上传CSV → 解析合并 → 分段缓存。"""
+    """拖拽上传CSV → 解析合并 → 分段缓存。
+
+    所有失败路径都会写入新的 upload-tick，前端据此必然解除加载遮罩；
+    不支持的文件类型在入口即被拒绝，不会进入解析流程。
+    """
+    tick = time.time()
+
     def _clear_state(err_msg=None):
         return (
             False,
@@ -164,6 +178,7 @@ def on_upload_csv(contents_list, filenames, radar_key):
             None,
             None,
             None,
+            tick,
         )
 
     if not contents_list:
@@ -181,14 +196,31 @@ def on_upload_csv(contents_list, filenames, radar_key):
     elif not filenames:
         filenames = [f'file_{i+1}.csv' for i in range(len(contents_list))]
 
-    all_dfs, errors, source_files = parse_upload_payloads(contents_list, filenames)
+    # 类型前置校验：accept 只约束文件对话框，拖拽可绕过，此处统一拦截
+    unsupported = [str(fn) for fn in filenames if not is_supported_upload(fn)]
+    if unsupported:
+        return _clear_state(html.Span(
+            f'不支持的文件类型: {"；".join(unsupported)}（仅支持 .csv / .json）',
+            style={'color': '#dc2626'}))
 
-    if not all_dfs:
-        err_msg = html.Span(f'所有文件解析失败: {"；".join(errors)}', style={'color': '#dc2626'})
-        return _clear_state(err_msg)
+    try:
+        all_dfs, errors, source_files = parse_upload_payloads(contents_list, filenames)
 
-    upload_label = filenames[0] if len(filenames) == 1 else f'{len(filenames)}个文件'
-    merged_df, meta_df, segments, source_keys = build_upload_caches(all_dfs, upload_label)
+        if not all_dfs:
+            err_msg = html.Span(
+                f'所有文件解析失败: {"；".join(errors)}',
+                style={'color': '#dc2626'})
+            return _clear_state(err_msg)
+
+        upload_label = (filenames[0] if len(filenames) == 1
+                        else f'{len(filenames)}个文件')
+        merged_df, meta_df, segments, source_keys = build_upload_caches(
+            all_dfs, upload_label)
+    except Exception as e:
+        logger.exception('上传文件处理失败')
+        return _clear_state(html.Span(
+            f'文件处理失败: {type(e).__name__}: {e}',
+            style={'color': '#dc2626'}))
 
     # 恢复上传前选择的来源；若该来源不在本次数据中则使用 combined。
     active_key = radar_key if radar_key in source_keys else 'combined'
@@ -230,4 +262,5 @@ def on_upload_csv(contents_list, filenames, radar_key):
         None,                                    # store-selected-trajectory
         None,                                    # store-selected-id
         None,                                    # store-box-selection
+        tick,                                    # upload-tick
         )

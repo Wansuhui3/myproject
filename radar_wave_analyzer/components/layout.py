@@ -58,6 +58,10 @@ def build_layout() -> html.Div:
     return html.Div([
         # 状态存储
         dcc.Store(id='store-data-loaded', data=False),
+        # 每次上传回调结束都写入新的时间戳，作为隐藏上传遮罩的可靠信号：
+        # store-data-loaded / cmp-state 在“上传失败且原值未变”时不会变化，
+        # 仅靠它们无法解除遮罩，会导致前端一直停留在加载状态。
+        dcc.Store(id='upload-tick', data=0),
         dcc.Store(id='store-segments-meta', data=None),
         dcc.Store(id='store-selected-trajectory', data=None),
         dcc.Store(id='store-selected-quantities', data=[]),

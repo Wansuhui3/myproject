@@ -29,16 +29,19 @@ app.clientside_callback(
 
 # ============================================================
 # 客户端回调: 文件处理完成后隐藏上传遮罩
-# store-data-loaded（波动页）与 cmp-state（对比页）任一变化即关闭遮罩
+# upload-tick 由每次上传回调无条件写入新时间戳，因此无论成功、失败
+# （含解析失败/类型不支持）都会触发本回调关闭遮罩；store-data-loaded
+# 与 cmp-state 作为兼容兜底保留。
 # ============================================================
 app.clientside_callback(
     """
-    function(loaded, cmpState) {
+    function(loaded, cmpState, tick) {
         if (window.hideUploadOverlay) { window.hideUploadOverlay(); }
         return '';
     }
     """,
     Output('scroll-anchor', 'children', allow_duplicate=True),
+    Input('upload-tick', 'data'),
     Input('store-data-loaded', 'data'),
     Input('cmp-state', 'data'),
     prevent_initial_call=True,

@@ -1,4 +1,5 @@
 import logging
+import time
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -26,7 +27,11 @@ from .cmp_preview_render import (
     _render_cmp_preview,
     _render_cmp_waiting_preview,
 )
-from .helpers import _decode_upload_contents, _perf_placeholder
+from .helpers import (
+    _decode_upload_contents,
+    _perf_placeholder,
+    is_supported_upload,
+)
 
 logger = logging.getLogger(__name__)
 """[C2] 统一上传：解析 + 缓存 + 预览 + ID 发现（单回调，无轮询）。"""
@@ -61,6 +66,8 @@ def _render_upload_feedback(role_label: str, meta: dict, prefix: str = '') -> ht
     Output('cmp-stats-content', 'children', allow_duplicate=True),
     Output('cmp-bins-content', 'children', allow_duplicate=True),
     Output('perf-panel-container', 'children', allow_duplicate=True),
+    # 每次上传结束（成功或失败）都写入新时间戳，供前端可靠解除加载遮罩
+    Output('upload-tick', 'data', allow_duplicate=True),
     Input('cmp-upload-radar', 'contents'),
     Input('cmp-upload-radar', 'filename'),
     Input('cmp-upload-rtk', 'contents'),
@@ -78,8 +85,12 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
       - 预览卡始终同时展示双方数据（已加载✓ / 等待○），无论上传顺序
 
     数据流：Upload事件 → 解析CSV → 缓存DataFrame → 写入cmp-state
-            → 读取state中双方meta → 渲染预览卡 + 配置卡
+           → 读取state中双方meta → 渲染预览卡 + 配置卡
+
+    所有失败路径都会写入新的 upload-tick（含类型不支持/解析失败），
+    确保前端加载遮罩在回调结束后必然解除，不会停留在加载状态。
     """
+    tick = time.time()
     trig = dash_ctx.triggered[0]['prop_id'].split('.')[0] if dash_ctx.triggered else ''
 
     # 确定触发角色
@@ -94,6 +105,9 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
     else:
         raise PreventUpdate
 
+    # 前置拒绝/解析失败路径共用的 no_update 序列（graph/stats/bins/perf面板）
+    graph_noop = (no_update,) * 4
+
     if not new_c:
         raise PreventUpdate
 
@@ -104,6 +118,21 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
     else:
         contents_list = [new_c]
         filenames = [new_n]
+
+    # 类型前置校验：拖拽可绕过 accept 属性，此处统一拦截
+    unsupported = [str(fn) for fn in filenames if not is_supported_upload(fn)]
+    if unsupported:
+        role_label = 'RADAR' if role == 'radar' else 'RTK'
+        bad_fb = html.Span(
+            f'❌ {role_label}: 不支持的文件类型 {", ".join(unsupported)}'
+            f'（仅支持 .csv / .json）',
+            className='feedback-error',
+        )
+        if role == 'radar':
+            return (no_update, no_update, no_update, bad_fb, no_update,
+                    *graph_noop, tick)
+        return (no_update, no_update, no_update, no_update, bad_fb,
+                *graph_noop, tick)
 
     # ── 解码并交给纯服务层解析/校验/合并 ──
     logger.info('[CMP-UPLOAD] 开始处理 %s: 共%d个文件', role, len(contents_list))
@@ -116,7 +145,20 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
             logger.exception('[CMP-UPLOAD] %s 文件[%d] %s 解码失败', role, i, fname)
             parse_errors.append(f'{fname}: 文件解码失败（{e}）')
 
-    upload_result = prepare_comparison_upload(file_payloads, role)
+    try:
+        upload_result = prepare_comparison_upload(file_payloads, role)
+    except Exception as e:
+        logger.exception('[CMP-UPLOAD] %s 文件处理失败', role)
+        role_label = 'RADAR' if role == 'radar' else 'RTK'
+        fail_fb = html.Span(
+            f'❌ {role_label}: 文件处理失败 - {type(e).__name__}: {e}',
+            className='feedback-error',
+        )
+        if role == 'radar':
+            return (no_update, no_update, no_update, fail_fb, no_update,
+                    *graph_noop, tick)
+        return (no_update, no_update, no_update, no_update, fail_fb,
+                *graph_noop, tick)
     parse_errors.extend(upload_result['errors'])
     info = upload_result['info']
     file_count = upload_result['file_count']
@@ -134,10 +176,11 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
             f'❌ {role.upper()}: 全部解析失败 - {"；".join(parse_errors)}',
             className='feedback-error',
         )
-        graph_noop = (no_update,) * 4   # graph/stats/bins/perf面板
         if role == 'radar':
-            return (no_update, no_update, no_update, fb, no_update, *graph_noop)
-        return (no_update, no_update, no_update, no_update, fb, *graph_noop)
+            return (no_update, no_update, no_update, fb, no_update,
+                    *graph_noop, tick)
+        return (no_update, no_update, no_update, no_update, fb,
+                *graph_noop, tick)
 
     # ── 组装本次要更新的数据侧（本区域 + 自动归类的另一区域）──
     side_updates: list[tuple[str, dict, int]] = []
@@ -286,7 +329,7 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
 
         return (state, preview, config, radar_fb, rtk_fb,
                 go.Figure(), _cmp_stats_placeholder(), _cmp_bins_placeholder(),
-                _perf_placeholder())
+                _perf_placeholder(), tick)
     else:
         # ═══ 等待态 → 并列展示双方各自状态 ═══
         preview = _render_cmp_waiting_preview(
@@ -300,4 +343,4 @@ def on_cmp_upload(radar_c, radar_n, rtk_c, rtk_n, state):
         logger.info('[CMP-UPLOAD] → 等待态 (radar=%s rtk=%s)', has_radar, has_rtk)
         return (state, preview, config, radar_fb, rtk_fb,
                 go.Figure(), _cmp_stats_placeholder(), _cmp_bins_placeholder(),
-                _perf_placeholder())
+                _perf_placeholder(), tick)
