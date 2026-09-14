@@ -297,7 +297,7 @@ def on_cmp_run(_n, selected_segments, state, delay_ms,
 
     # 统计面板
     stats_html = render_cmp_error_stats(
-        mapping_results, summary=summary, match_summary=match_summary,
+        mapping_results, match_summary=match_summary,
     )
 
     # 右栏摘要仅展示用户手动插入的快照；普通执行对齐不得覆盖或预览它。

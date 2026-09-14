@@ -8,13 +8,12 @@ from .panel_common import _fmt_val, _render_empty, _stat_row
 
 def render_cmp_error_stats(
     mapping_results: list[dict],
-    summary: dict | None = None,
     match_summary: dict | None = None,
 ) -> html.Div:
-    """仅渲染当前曲线中可比较物理量的 RMSE。
+    """仅渲染当前曲线中可比较物理量的 RMSE 与匹配率。
 
-    曲线通道由用户映射决定，因此不能继续展示固定的 Dx/Dy/速度合量、
-    匹配率或延迟。单位不兼容的叠加曲线只用于观察，不生成误差数值。
+    曲线通道由用户映射决定，因此不能继续展示固定的 Dx/Dy/速度合量或延迟。
+    单位不兼容的叠加曲线只用于观察，不生成误差数值。
     """
     rows = []
     for mapping in mapping_results:
@@ -29,11 +28,6 @@ def render_cmp_error_stats(
             unit,
         ))
 
-    # 同时展示位置匹配 RMSE 与匹配率；位置全时段 RMSE 与位置匹配 RMSE
-    # 在无门控剔除时恒等，仅保留一个避免重复。
-    if summary:
-        matched = summary.get('pos_error_abs') or {}
-        rows.append(_stat_row('位置匹配 RMSE', _fmt_val(matched.get('rmse')), 'm'))
     if match_summary:
         rows.append(_stat_row(
             '匹配率',
